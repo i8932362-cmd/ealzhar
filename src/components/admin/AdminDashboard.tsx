@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Settings,
@@ -21,12 +21,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
-  Lock,
-  Copy,
-  FileCode2,
-  BookOpen,
   Table,
-  UserCog,
+  Pencil,
+  Layers,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
@@ -38,10 +35,16 @@ import {
   SchoolLocation,
   FaceTemplate,
   TeacherAttendance,
+  AttendanceSession,
+  SessionTargetType,
 } from '../../types/index.ts';
 import { gasGet, gasPost, getWibTodayStr } from '../../lib/api.ts';
-import { getGasConfig, isGasConfigured } from '../../lib/gasConfig.ts';
-import { APPS_SCRIPT_CODE, APPS_SCRIPT_DEPLOY_GUIDE } from '../../lib/appsScriptTemplate.ts';
+import {
+  formatWibTime24,
+  formatWibDateTime24,
+  generateSessionSheetName,
+  sortSessions,
+} from '../../lib/sessions.ts';
 import {
   loadFaceDetectionModels,
   areFaceModelsLoaded,
@@ -53,6 +56,8 @@ import {
 } from '../../lib/faceDetection.ts';
 import { TableSkeleton } from '../common/Skeleton.tsx';
 import { ConfirmModal } from '../common/ConfirmModal.tsx';
+import { TimeInput24h } from '../common/TimeInput24h.tsx';
+import { PasswordInput } from '../common/PasswordInput.tsx';
 import { StudentCardManager } from './StudentCardManager.tsx';
 
 export const AdminDashboard: React.FC = () => {
@@ -70,7 +75,10 @@ export const AdminDashboard: React.FC = () => {
     users: usersList,
     auditLogs,
     faceTemplates,
-    gasConfigured,
+    sessions,
+    activeStudentSession,
+    activeTeacherSession,
+    wibNowHhMm,
     saveStatus,
     saveMessage,
   } = useSync();
@@ -84,14 +92,6 @@ export const AdminDashboard: React.FC = () => {
   const [settingsForm, setSettingsForm] = useState<Partial<SchoolSettings>>({});
   const [settingsSaved, setSettingsSaved] = useState<boolean>(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-
-  // Google Apps Script status & auto-provision
-  const gasCfgSnapshot = getGasConfig();
-  const [gasConfigMsg, setGasConfigMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [showScriptPanel, setShowScriptPanel] = useState<boolean>(false);
-  const [scriptDocTab, setScriptDocTab] = useState<'code' | 'guide'>('code');
-  const [copiedScriptTab, setCopiedScriptTab] = useState<'code' | 'guide' | null>(null);
-  const [isProvisioningDb, setIsProvisioningDb] = useState<boolean>(false);
 
   const handleDataMutated = useCallback(async () => {
     await notifyFaceDatabaseChanged();
@@ -118,51 +118,6 @@ export const AdminDashboard: React.FC = () => {
       }
     } catch (err: any) {
       setSettingsError(err?.message || 'Gagal menyimpan pengaturan ke Google Sheets.');
-    }
-  };
-
-  // Auto-create Spreadsheet & Drive folders if missing
-  const handleAutoProvisionDatabase = async () => {
-    setIsProvisioningDb(true);
-    try {
-      const prov = await gasPost<{
-        spreadsheetName?: string;
-        folderName?: string;
-        createdSpreadsheet?: boolean;
-        createdDriveFolder?: boolean;
-        message?: string;
-      }>('setupDatabase', {
-        spreadsheetName: `Database Presensi - ${settings?.schoolName || 'Yayasan Mambaul Ulum'}`,
-        folderName: `Database Presensi - ${settings?.schoolName || 'Yayasan Mambaul Ulum'}`,
-      });
-
-      if (prov.success) {
-        setGasConfigMsg({
-          type: 'success',
-          text:
-            prov.message ||
-            'Database Google Sheets & Folder Drive (termasuk subfolder Database Wajah) siap digunakan!',
-        });
-        await notifyFaceDatabaseChanged();
-      }
-    } catch (err: any) {
-      setGasConfigMsg({
-        type: 'error',
-        text: err?.message || 'Gagal membuat database Sheet & Drive otomatis.',
-      });
-    } finally {
-      setIsProvisioningDb(false);
-    }
-  };
-
-  const handleCopyScriptText = async (type: 'code' | 'guide') => {
-    try {
-      const content = type === 'code' ? APPS_SCRIPT_CODE : APPS_SCRIPT_DEPLOY_GUIDE;
-      await navigator.clipboard.writeText(content);
-      setCopiedScriptTab(type);
-      setTimeout(() => setCopiedScriptTab(null), 2500);
-    } catch {
-      setGasConfigMsg({ type: 'error', text: 'Gagal menyalin ke clipboard browser.' });
     }
   };
 
@@ -210,15 +165,15 @@ export const AdminDashboard: React.FC = () => {
   };
 
   return (
-    <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-8">
+    <div className="max-w-7xl mx-auto px-3 py-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-bold text-xl shadow-md">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-bold text-xl shadow-md flex-shrink-0">
             <Shield className="w-6 h-6 text-blue-400" />
           </div>
-          <div>
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
               Panel Administrator Utama
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -227,7 +182,7 @@ export const AdminDashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
           {saveStatus === 'saving' && (
             <span className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold">
               Menyimpan...
@@ -250,10 +205,10 @@ export const AdminDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Admin Navigation Pills */}
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+      {/* Admin Navigation Pills (Horizontally scrollable on mobile phones) */}
+      <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
         {[
-          { id: 'settings', label: 'Pengaturan & Apps Script', icon: <Settings className="w-4 h-4" /> },
+          { id: 'settings', label: 'Pengaturan & Sesi', icon: <Settings className="w-4 h-4" /> },
           { id: 'users', label: 'Pengguna & Akun', icon: <Users className="w-4 h-4" /> },
           { id: 'face_db', label: 'Database Wajah', icon: <Camera className="w-4 h-4" /> },
           { id: 'locations', label: 'Titik Lokasi GPS', icon: <MapPin className="w-4 h-4" /> },
@@ -267,7 +222,7 @@ export const AdminDashboard: React.FC = () => {
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id as any)}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition ${
+            className={`flex-shrink-0 whitespace-nowrap flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition ${
               activeTab === item.id
                 ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/25'
                 : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -279,154 +234,24 @@ export const AdminDashboard: React.FC = () => {
         ))}
       </div>
 
-      {/* Tab 1: Settings + Google Apps Script Configuration & Script Code */}
+      {/* Tab 1: Session Rules (Siswa vs Guru) & School System Settings */}
       {activeTab === 'settings' && (
-        <div className="space-y-6 max-w-4xl">
-          {/* Card 1: Status Koneksi Google Apps Script (Dikelola di Menu Superadmin) */}
-          <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <FileCode2 className="w-5 h-5 text-blue-600" />
-                  <span>Status Koneksi Google Apps Script & Database</span>
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Pengaturan & penguncian URL Web App dan Token rahasia dikelola khusus di <strong>Menu Superadmin</strong> (ikon orang kecil di pojok kanan atas).
-                </p>
-              </div>
-
-              {gasConfigured && isGasConfigured() ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Apps Script Aktif
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-                  Belum Dikonfigurasi
-                </span>
-              )}
-            </div>
-
-            {gasConfigMsg && (
-              <div
-                className={`p-3.5 rounded-2xl border text-xs flex items-center gap-2 ${
-                  gasConfigMsg.type === 'success'
-                    ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
-                    : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
-                }`}
-              >
-                {gasConfigMsg.type === 'success' ? (
-                  <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                )}
-                <span>{gasConfigMsg.text}</span>
-              </div>
-            )}
-
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-2.5">
-                <UserCog className="w-4 h-4 text-indigo-600 flex-shrink-0" />
-                <div>
-                  <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                    <span>Konfigurasi URL &amp; Token:</span>
-                    <span className={gasCfgSnapshot.locked ? 'text-emerald-600' : 'text-amber-600'}>
-                      {gasCfgSnapshot.locked ? 'Terkunci & Aktif Lintas Perangkat' : 'Belum Dikunci'}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    Untuk mengubah atau membagikan tautan terkunci Vercel, masuk melalui ikon orang kecil (Menu Superadmin).
-                  </div>
-                </div>
-              </div>
-              {gasCfgSnapshot.locked && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 font-bold text-[11px]">
-                  <Lock className="w-3 h-3" />
-                  Terkunci
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5">
-              {isGasConfigured() && (
-                <button
-                  type="button"
-                  disabled={isProvisioningDb}
-                  onClick={() => void handleAutoProvisionDatabase()}
-                  className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm disabled:opacity-50 transition"
-                >
-                  <Table className="w-3.5 h-3.5" />
-                  <span>{isProvisioningDb ? 'Menyiapkan Sheet & Drive...' : 'Buat / Siapkan Database Sheet & Drive'}</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setShowScriptPanel(prev => !prev)}
-                className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition"
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                <span>{showScriptPanel ? 'Tutup Kode & Petunjuk Deploy' : 'Lihat Kode Apps Script & Petunjuk Deploy'}</span>
-              </button>
-            </div>
-
-            {showScriptPanel && (
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800">
-                    <button
-                      type="button"
-                      onClick={() => setScriptDocTab('code')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                        scriptDocTab === 'code'
-                          ? 'bg-blue-600 text-white'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      Kode Lengkap Code.gs
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setScriptDocTab('guide')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                        scriptDocTab === 'guide'
-                          ? 'bg-blue-600 text-white'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      Petunjuk Deploy
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => void handleCopyScriptText(scriptDocTab)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    <span>
-                      {copiedScriptTab === scriptDocTab
-                        ? 'Berhasil Disalin!'
-                        : scriptDocTab === 'code'
-                        ? 'Salin Code.gs'
-                        : 'Salin Petunjuk Deploy'}
-                    </span>
-                  </button>
-                </div>
-
-                <pre className="p-4 rounded-2xl bg-slate-950 text-slate-100 text-[11px] font-mono overflow-x-auto max-h-80 leading-relaxed">
-                  {scriptDocTab === 'code' ? APPS_SCRIPT_CODE : APPS_SCRIPT_DEPLOY_GUIDE}
-                </pre>
-              </div>
-            )}
-          </div>
+        <div className="space-y-6 max-w-5xl">
+          {/* Card 1: Per-Role Attendance Session Rules (Siswa & Guru Terpisah, Auto-Switch 24 Jam, Sheet Baru Per Sesi) */}
+          <SessionManagementCard
+            sessions={sessions}
+            activeStudentSession={activeStudentSession}
+            activeTeacherSession={activeTeacherSession}
+            wibNowHhMm={wibNowHhMm}
+            onRefresh={handleDataMutated}
+          />
 
           {/* Card 2: School System Settings */}
           <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
           <div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Pengaturan Sistem Presensi</h3>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Pengaturan Umum Sekolah &amp; Toilet</h3>
             <p className="text-xs text-slate-500">
-              Konfigurasi jam masuk, toleransi terlambat, batas toilet, dan tahun ajaran
+              Identitas sekolah, format jam 24 jam (WIB), batas waktu toilet, dan ambang peringatan BK
             </p>
           </div>
 
@@ -512,44 +337,23 @@ export const AdminDashboard: React.FC = () => {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Jam Mulai Presensi Masuk (WIB)
-                </label>
-                <input
-                  type="time"
-                  value={settingsForm.checkInTime || '07:00'}
-                  onChange={e => setSettingsForm({ ...settingsForm, checkInTime: e.target.value })}
-                  className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                  required
-                />
-              </div>
+              <TimeInput24h
+                label="Jam Mulai Default (24 Jam WIB)"
+                value={settingsForm.checkInTime || '07:00'}
+                onChange={(val) => setSettingsForm({ ...settingsForm, checkInTime: val })}
+              />
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Batas Akhir Hadir Tepat Waktu (Cutoff Terlambat)
-                </label>
-                <input
-                  type="time"
-                  value={settingsForm.lateCutoffTime || '07:15'}
-                  onChange={e => setSettingsForm({ ...settingsForm, lateCutoffTime: e.target.value })}
-                  className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                  required
-                />
-              </div>
+              <TimeInput24h
+                label="Batas Terlambat Default (24 Jam WIB)"
+                value={settingsForm.lateCutoffTime || '07:15'}
+                onChange={(val) => setSettingsForm({ ...settingsForm, lateCutoffTime: val })}
+              />
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Jam Pulang Sekolah
-                </label>
-                <input
-                  type="time"
-                  value={settingsForm.checkOutTime || '15:00'}
-                  onChange={e => setSettingsForm({ ...settingsForm, checkOutTime: e.target.value })}
-                  className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                  required
-                />
-              </div>
+              <TimeInput24h
+                label="Jam Pulang Default (24 Jam WIB)"
+                value={settingsForm.checkOutTime || '15:00'}
+                onChange={(val) => setSettingsForm({ ...settingsForm, checkOutTime: val })}
+              />
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
@@ -727,7 +531,7 @@ export const AdminDashboard: React.FC = () => {
 
       {/* Tab 9: Rekap Presensi Guru (Harian, Pekan, Bulanan - Sinkron Real-Time) */}
       {activeTab === 'teacher_recap' && (
-        <TeacherRecapSection serverVersion={serverVersion} teachers={teachers} />
+        <TeacherRecapSection serverVersion={serverVersion} teachers={teachers} sessions={sessions} />
       )}
 
       {/* Tab 10: Sheet Log */}
@@ -735,22 +539,14 @@ export const AdminDashboard: React.FC = () => {
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-base font-bold text-slate-900 dark:text-white">Riwayat Perubahan Database (Sheet Log)</h3>
-            <div className="flex items-center gap-2">
-              {gasConfigured && isGasConfigured() && (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Apps Script Aktif
-                </span>
-              )}
-              <span className="text-xs text-slate-500">100 Log Terbaru</span>
-            </div>
+            <span className="text-xs text-slate-500">100 Log Terbaru (Format 24 Jam WIB)</span>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-semibold">
-                  <th className="py-3 px-3">Waktu</th>
+                  <th className="py-3 px-3">Waktu (24J WIB)</th>
                   <th className="py-3 px-3">User</th>
                   <th className="py-3 px-3">Aksi</th>
                   <th className="py-3 px-3">Entitas</th>
@@ -761,7 +557,7 @@ export const AdminDashboard: React.FC = () => {
                 {auditLogs.map(log => (
                   <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                     <td className="py-3 px-3 font-mono text-slate-400">
-                      {new Date(log.createdAt).toLocaleString('id-ID')}
+                      {formatWibDateTime24(log.createdAt)} WIB
                     </td>
                     <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white">{log.userId}</td>
                     <td className="py-3 px-3">
@@ -786,6 +582,506 @@ export const AdminDashboard: React.FC = () => {
 // -----------------------------------------------------------------------------
 // Sub-components for Admin
 // -----------------------------------------------------------------------------
+
+const SessionManagementCard: React.FC<{
+  sessions: AttendanceSession[];
+  activeStudentSession: AttendanceSession | null;
+  activeTeacherSession: AttendanceSession | null;
+  wibNowHhMm: string;
+  onRefresh: () => void | Promise<void>;
+}> = ({ sessions, activeStudentSession, activeTeacherSession, wibNowHhMm, onRefresh }) => {
+  const [roleTab, setRoleTab] = useState<SessionTargetType>('student');
+  const [editingSession, setEditingSession] = useState<AttendanceSession | null>(null);
+  const [showForm, setShowForm] = useState<boolean>(false);
+  const [formState, setFormState] = useState<{
+    targetType: SessionTargetType;
+    name: string;
+    startTime: string;
+    lateCutoffTime: string;
+    endTime: string;
+    sheetName: string;
+    sortOrder: number;
+    isActive: boolean;
+  }>({
+    targetType: 'student',
+    name: '',
+    startTime: '06:30',
+    lateCutoffTime: '07:15',
+    endTime: '12:00',
+    sheetName: '',
+    sortOrder: 1,
+    isActive: true,
+  });
+  const [sheetEditedManually, setSheetEditedManually] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AttendanceSession | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  const filteredSessions = useMemo(
+    () => sortSessions(sessions.filter((s) => s.targetType === roleTab)),
+    [sessions, roleTab]
+  );
+
+  const openAddForm = (targetType: SessionTargetType) => {
+    const existingCount = sessions.filter((s) => s.targetType === targetType).length;
+    const defaultName = targetType === 'student' ? `Sesi Siswa ${existingCount + 1}` : `Sesi Guru ${existingCount + 1}`;
+    setEditingSession(null);
+    setSheetEditedManually(false);
+    setFeedback(null);
+    setFormState({
+      targetType,
+      name: defaultName,
+      startTime: existingCount === 0 ? '06:00' : '12:01',
+      lateCutoffTime: existingCount === 0 ? '07:15' : '13:00',
+      endTime: existingCount === 0 ? '12:00' : '18:00',
+      sheetName: generateSessionSheetName(targetType, defaultName),
+      sortOrder: existingCount + 1,
+      isActive: true,
+    });
+    setShowForm(true);
+  };
+
+  const openEditForm = (ses: AttendanceSession) => {
+    setEditingSession(ses);
+    setSheetEditedManually(true);
+    setFeedback(null);
+    setFormState({
+      targetType: ses.targetType,
+      name: ses.name,
+      startTime: ses.startTime,
+      lateCutoffTime: ses.lateCutoffTime,
+      endTime: ses.endTime,
+      sheetName: ses.sheetName,
+      sortOrder: ses.sortOrder || 1,
+      isActive: ses.isActive !== false,
+    });
+    setShowForm(true);
+  };
+
+  const handleNameChange = (name: string) => {
+    setFormState((prev) => ({
+      ...prev,
+      name,
+      sheetName: sheetEditedManually ? prev.sheetName : generateSessionSheetName(prev.targetType, name),
+    }));
+  };
+
+  const handleSaveSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formState.name.trim()) {
+      setFeedback({ type: 'error', text: 'Nama sesi wajib diisi.' });
+      return;
+    }
+    setIsSaving(true);
+    setFeedback(null);
+    try {
+      const payloadData = {
+        targetType: formState.targetType,
+        name: formState.name.trim(),
+        startTime: formState.startTime,
+        lateCutoffTime: formState.lateCutoffTime,
+        endTime: formState.endTime,
+        sheetName: (formState.sheetName || generateSessionSheetName(formState.targetType, formState.name)).trim(),
+        sortOrder: Number(formState.sortOrder) || 1,
+        isActive: formState.isActive,
+      };
+
+      const res = editingSession
+        ? await gasPost('updateRecord', {
+            entity: 'Sessions',
+            id: editingSession.id,
+            data: {
+              ...payloadData,
+              expectedUpdatedAt: editingSession.diubah_pada || editingSession.updatedAt,
+            },
+          })
+        : await gasPost('createRecord', {
+            entity: 'Sessions',
+            data: payloadData,
+          });
+
+      if (res.success) {
+        setShowForm(false);
+        setEditingSession(null);
+        setFeedback({
+          type: 'success',
+          text: editingSession
+            ? `Peraturan sesi "${payloadData.name}" diperbarui & Sheet "${(res.data as any)?.sheetName || payloadData.sheetName}" disinkronkan.`
+            : `Sesi baru "${payloadData.name}" dibuat beserta Sheet khusus "${(res.data as any)?.sheetName || payloadData.sheetName}".`,
+        });
+        await onRefresh();
+      } else {
+        setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan sesi presensi.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err?.message || 'Gagal menyimpan sesi presensi.' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    try {
+      const res = await gasPost('softDeleteRecord', {
+        entity: 'Sessions',
+        id: deleteTarget.id,
+        expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
+      });
+      if (res.success) {
+        setDeleteTarget(null);
+        setFeedback({ type: 'success', text: `Sesi "${deleteTarget.name}" telah dihapus.` });
+        await onRefresh();
+      } else {
+        setFeedback({ type: 'error', text: res.error || 'Gagal menghapus sesi.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus sesi.' });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  return (
+    <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Layers className="w-5 h-5 text-blue-600" />
+            <span>Peraturan Sesi Presensi Siswa &amp; Guru (24 Jam WIB)</span>
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Aturan sesi siswa dan guru terpisah. Setiap sesi otomatis beralih sesuai jam 24 jam (WIB) dan memiliki Sheet Google tersendiri agar presensi berdiri sendiri tanpa bercampur.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          <span className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-200">
+            Sekarang: {wibNowHhMm} WIB
+          </span>
+          <button
+            type="button"
+            onClick={() => openAddForm(roleTab)}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-sm transition"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Tambah Sesi {roleTab === 'student' ? 'Siswa' : 'Guru'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Role Switcher: Sesi Siswa vs Sesi Guru */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+        <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+          <button
+            type="button"
+            onClick={() => {
+              setRoleTab('student');
+              setShowForm(false);
+            }}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition ${
+              roleTab === 'student'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            <GraduationCap className="w-4 h-4" />
+            <span>Sesi Siswa ({sessions.filter((s) => s.targetType === 'student').length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRoleTab('teacher');
+              setShowForm(false);
+            }}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition ${
+              roleTab === 'teacher'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            <Briefcase className="w-4 h-4" />
+            <span>Sesi Guru ({sessions.filter((s) => s.targetType === 'teacher').length})</span>
+          </button>
+        </div>
+
+        <div className="text-xs text-slate-500">
+          {roleTab === 'student' ? (
+            <span>
+              Sedang Aktif:{' '}
+              <strong className="text-emerald-600 dark:text-emerald-400">
+                {activeStudentSession ? `${activeStudentSession.name} (${activeStudentSession.startTime}–${activeStudentSession.endTime} WIB)` : 'Di luar jadwal sesi siswa'}
+              </strong>
+            </span>
+          ) : (
+            <span>
+              Sedang Aktif:{' '}
+              <strong className="text-emerald-600 dark:text-emerald-400">
+                {activeTeacherSession ? `${activeTeacherSession.name} (${activeTeacherSession.startTime}–${activeTeacherSession.endTime} WIB)` : 'Di luar jadwal sesi guru'}
+              </strong>
+            </span>
+          )}
+        </div>
+      </div>
+
+      {feedback && (
+        <div
+          className={`p-3.5 rounded-2xl border text-xs flex items-center gap-2 ${
+            feedback.type === 'success'
+              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+              : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+          }`}
+        >
+          {feedback.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          )}
+          <span>{feedback.text}</span>
+        </div>
+      )}
+
+      {/* Session Add/Edit Form */}
+      {showForm && (
+        <form
+          onSubmit={handleSaveSession}
+          className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-4"
+        >
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-black text-slate-900 dark:text-white">
+              {editingSession ? `Edit Sesi: ${editingSession.name}` : `Tambah Sesi ${formState.targetType === 'student' ? 'Siswa' : 'Guru'} Baru`}
+            </h4>
+            <button
+              type="button"
+              onClick={() => {
+                setShowForm(false);
+                setEditingSession(null);
+              }}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-white"
+            >
+              Tutup
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Peruntukan Sesi
+              </label>
+              <select
+                value={formState.targetType}
+                disabled={Boolean(editingSession)}
+                onChange={(e) => {
+                  const nextType = e.target.value as SessionTargetType;
+                  setFormState((prev) => ({
+                    ...prev,
+                    targetType: nextType,
+                    sheetName: sheetEditedManually ? prev.sheetName : generateSessionSheetName(nextType, prev.name),
+                  }));
+                }}
+                className="w-full px-3.5 py-2.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl disabled:opacity-60"
+              >
+                <option value="student">Presensi Siswa</option>
+                <option value="teacher">Presensi Guru</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Nama Sesi
+              </label>
+              <input
+                type="text"
+                value={formState.name}
+                onChange={(e) => handleNameChange(e.target.value)}
+                placeholder="Contoh: Sesi Pagi / Sesi Ekskul"
+                className="w-full px-3.5 py-2.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Nama Sheet Khusus Sesi
+              </label>
+              <input
+                type="text"
+                value={formState.sheetName}
+                onChange={(e) => {
+                  setSheetEditedManually(true);
+                  setFormState((prev) => ({ ...prev, sheetName: e.target.value }));
+                }}
+                placeholder="Presensi_Siswa_Sesi_Pagi"
+                className="w-full px-3.5 py-2.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl"
+                required
+              />
+            </div>
+
+            <TimeInput24h
+              label="Jam Mulai Sesi (24J WIB)"
+              value={formState.startTime}
+              onChange={(val) => setFormState((prev) => ({ ...prev, startTime: val }))}
+            />
+
+            <TimeInput24h
+              label="Batas Tepat Waktu / Cutoff (24J WIB)"
+              value={formState.lateCutoffTime}
+              onChange={(val) => setFormState((prev) => ({ ...prev, lateCutoffTime: val }))}
+            />
+
+            <TimeInput24h
+              label="Jam Selesai Sesi (24J WIB)"
+              value={formState.endTime}
+              onChange={(val) => setFormState((prev) => ({ ...prev, endTime: val }))}
+            />
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Urutan Prioritas
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={99}
+                value={formState.sortOrder}
+                onChange={(e) => setFormState((prev) => ({ ...prev, sortOrder: Number(e.target.value) || 1 }))}
+                className="w-full px-3.5 py-2.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl"
+              />
+            </div>
+
+            <div className="sm:col-span-2 flex items-end pb-2">
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={formState.isActive}
+                  onChange={(e) => setFormState((prev) => ({ ...prev, isActive: e.target.checked }))}
+                  className="rounded text-blue-600 w-4 h-4"
+                />
+                <span>Aktifkan Sesi &amp; Peralihan Otomatis (24 Jam WIB)</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => {
+                setShowForm(false);
+                setEditingSession(null);
+              }}
+              className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200"
+            >
+              Batal
+            </button>
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-sm disabled:opacity-50"
+            >
+              {isSaving ? 'Menyimpan & Menyiapkan Sheet...' : editingSession ? 'Simpan Perubahan Sesi' : 'Simpan & Buat Sheet Baru'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Session List */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {filteredSessions.length === 0 ? (
+          <div className="md:col-span-2 py-8 text-center text-xs text-slate-400 border border-dashed border-slate-200 dark:border-slate-700 rounded-2xl">
+            Belum ada sesi {roleTab === 'student' ? 'siswa' : 'guru'} yang terdaftar. Klik tombol Tambah Sesi di atas.
+          </div>
+        ) : (
+          filteredSessions.map((ses) => {
+            const isRunningNow =
+              roleTab === 'student'
+                ? activeStudentSession?.id === ses.id
+                : activeTeacherSession?.id === ses.id;
+            return (
+              <div
+                key={ses.id}
+                className={`p-4 rounded-2xl border space-y-3 transition ${
+                  isRunningNow
+                    ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-700'
+                    : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-black text-slate-900 dark:text-white">{ses.name}</span>
+                      {isRunningNow && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-bold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                          Aktif Otomatis Sekarang
+                        </span>
+                      )}
+                      {ses.isActive === false && (
+                        <span className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-bold">
+                          Nonaktif
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
+                      Sheet Google: <strong className="text-slate-700 dark:text-slate-200">{ses.sheetName}</strong>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openEditForm(ses)}
+                      className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-blue-600 hover:bg-blue-50 transition"
+                      title="Edit Peraturan Sesi"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(ses)}
+                      className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-red-600 hover:bg-red-50 transition"
+                      title="Hapus Sesi"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-[11px]">
+                  <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700">
+                    <div className="text-slate-400">Jam Mulai</div>
+                    <div className="font-mono font-bold text-slate-900 dark:text-white">{ses.startTime} WIB</div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700">
+                    <div className="text-slate-400">Batas Cutoff</div>
+                    <div className="font-mono font-bold text-amber-600 dark:text-amber-400">{ses.lateCutoffTime} WIB</div>
+                  </div>
+                  <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700">
+                    <div className="text-slate-400">Jam Selesai</div>
+                    <div className="font-mono font-bold text-slate-900 dark:text-white">{ses.endTime} WIB</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {deleteTarget && (
+        <ConfirmModal
+          isOpen={Boolean(deleteTarget)}
+          title={`Hapus Sesi "${deleteTarget.name}"?`}
+          message={`Aturan sesi "${deleteTarget.name}" akan dihapus (soft delete). Riwayat sheet "${deleteTarget.sheetName}" di Google Spreadsheet tidak akan hilang.`}
+          confirmLabel="Ya, Hapus Sesi"
+          isLoading={isDeleting}
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+    </div>
+  );
+};
 
 // Face Database Enrollment
 const FaceDatabaseSection: React.FC<{
@@ -1314,10 +1610,23 @@ const UserManagementSection: React.FC<{
   const [resetNewPassword, setResetNewPassword] = useState('');
 
   const onlineUserIds = new Set(activeUsers.map(a => a.userId));
+  const visibleUsers = useMemo(
+    () =>
+      users.filter(
+        (u) =>
+          String(u.role || '').toLowerCase() !== 'superadmin' &&
+          String(u.username || '').toLowerCase() !== 'superadmin'
+      ),
+    [users]
+  );
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setUserFeedback(null);
+    if (username.trim().toLowerCase() === 'superadmin') {
+      setUserFeedback({ type: 'error', text: 'Admin tidak dapat membuat atau mengatur akun Superadmin.' });
+      return;
+    }
     try {
       const res = await gasPost('createRecord', {
         entity: 'Users',
@@ -1344,6 +1653,10 @@ const UserManagementSection: React.FC<{
 
   const handleToggleActive = async (targetUser: any) => {
     setUserFeedback(null);
+    if (String(targetUser.role || '').toLowerCase() === 'superadmin') {
+      setUserFeedback({ type: 'error', text: 'Akun Superadmin tidak dapat diubah oleh Admin.' });
+      return;
+    }
     try {
       const nextActive = !targetUser.isActive;
       const res = await gasPost('updateRecord', {
@@ -1366,6 +1679,10 @@ const UserManagementSection: React.FC<{
 
   const handleDeleteUser = async (targetUser: any) => {
     setUserFeedback(null);
+    if (String(targetUser.role || '').toLowerCase() === 'superadmin') {
+      setUserFeedback({ type: 'error', text: 'Akun Superadmin tidak dapat dihapus oleh Admin.' });
+      return;
+    }
     try {
       const res = await gasPost('softDeleteRecord', {
         entity: 'Users',
@@ -1409,12 +1726,12 @@ const UserManagementSection: React.FC<{
   };
 
   return (
-    <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+    <div className="p-4 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white">Manajemen Akun Multi-Pengguna</h3>
           <p className="text-xs text-slate-500">
-            Kelola akun Admin, Wali Kelas, Guru BK, Kesiswaan & Guru beserta status online real-time
+            Kelola akun Admin, Wali Kelas, Guru BK, Kesiswaan & Guru beserta status online real-time (Sandi Superadmin terisolasi di cache Superadmin)
           </p>
         </div>
         <button
@@ -1456,7 +1773,7 @@ const UserManagementSection: React.FC<{
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {users.map(u => {
+            {visibleUsers.map(u => {
               const isOnline = onlineUserIds.has(u.id);
               const isSelf = u.id === currentUserId;
               return (
@@ -1536,19 +1853,19 @@ const UserManagementSection: React.FC<{
       </div>
 
       {resetTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-slate-900 p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4">
+          <div className="w-full max-w-sm max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
             <h4 className="text-sm font-bold text-slate-900 dark:text-white">
               Reset Kata Sandi: {resetTarget.name}
             </h4>
             <form onSubmit={handleConfirmResetPassword} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold mb-1">Kata Sandi Baru (Minimal 5 karakter)</label>
-                <input
-                  type="password"
+                <PasswordInput
                   value={resetNewPassword}
                   onChange={e => setResetNewPassword(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  placeholder="Masukkan kata sandi baru"
+                  className="text-xs py-2.5"
                   minLength={5}
                   required
                 />
@@ -1574,8 +1891,8 @@ const UserManagementSection: React.FC<{
       )}
 
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Pengguna Baru</h3>
             <form onSubmit={handleCreate} className="space-y-3 text-xs">
               <div>
@@ -1610,11 +1927,11 @@ const UserManagementSection: React.FC<{
               </div>
               <div>
                 <label className="block font-semibold mb-1">Password</label>
-                <input
-                  type="password"
+                <PasswordInput
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  placeholder="Minimal 5 karakter"
+                  className="text-xs py-2.5"
                   minLength={5}
                   required
                 />
@@ -1849,8 +2166,8 @@ const LocationsSection: React.FC<{
       />
 
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Titik Lokasi Baru</h3>
             <form onSubmit={handleCreateLocation} className="space-y-3 text-xs">
               <div>
@@ -1989,7 +2306,7 @@ const ClassesSection: React.FC<{
       const res = await gasPost('promoteClass', {
         sourceClassId,
         targetClassId,
-        action,
+        promoteAction: action,
       });
       if (res.success) {
         setFeedback({ type: 'success', text: res.message || 'Kenaikan kelas berhasil diproses.' });
@@ -2071,8 +2388,8 @@ const ClassesSection: React.FC<{
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Kelas Baru</h3>
             <form onSubmit={handleCreateClass} className="space-y-3 text-xs">
               <div>
@@ -2137,8 +2454,8 @@ const ClassesSection: React.FC<{
       )}
 
       {showPromoteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-2">Kenaikan Kelas Massal</h3>
             <p className="text-xs text-slate-500 mb-4">
               Pindahkan seluruh siswa dari satu kelas ke kelas tingkat selanjutnya atau luluskan.
@@ -2393,8 +2710,8 @@ const StudentsSection: React.FC<{
       />
 
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Siswa Baru</h3>
             <form onSubmit={handleCreate} className="space-y-3 text-xs">
               <div>
@@ -2723,6 +3040,8 @@ interface TeacherRecapRecord {
   timeOut?: string;
   status: string;
   method: string;
+  sessionId?: string;
+  sessionName?: string;
   notes?: string;
 }
 
@@ -2786,11 +3105,17 @@ function formatTanggalIndo(dateStr: string): string {
 const TeacherRecapSection: React.FC<{
   serverVersion: number;
   teachers: Teacher[];
-}> = ({ serverVersion, teachers }) => {
+  sessions: AttendanceSession[];
+}> = ({ serverVersion, teachers, sessions }) => {
+  const teacherSessions = useMemo(
+    () => sortSessions(sessions.filter((s) => s.targetType === 'teacher')),
+    [sessions]
+  );
   const todayStr = getWibTodayStr();
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [selectedMonth, setSelectedMonth] = useState<string>(todayStr.slice(0, 7));
+  const [sessionFilter, setSessionFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [recap, setRecap] = useState<TeacherRecapResponse | null>(null);
@@ -2817,6 +3142,7 @@ const TeacherRecapSection: React.FC<{
         userNip: targetTeacher?.nip || '',
         userEmail: targetTeacher?.email || '',
         userName: targetTeacher?.name || '',
+        sessionId: sessionFilter !== 'ALL' ? sessionFilter : undefined,
       });
       if (res.success && Array.isArray(res.data)) {
         setIndividualHistory(res.data);
@@ -2826,7 +3152,7 @@ const TeacherRecapSection: React.FC<{
     } finally {
       setLoadingIndividual(false);
     }
-  }, [teachers]);
+  }, [teachers, sessionFilter]);
 
   useEffect(() => {
     if (selectedTeacherId) {
@@ -2840,20 +3166,20 @@ const TeacherRecapSection: React.FC<{
       const res = await gasGet<TeacherRecapResponse>(
         'teacherRecap',
         period === 'monthly'
-          ? { period, month: selectedMonth }
-          : { period, date: selectedDate }
+          ? { period, month: selectedMonth, sessionId: sessionFilter !== 'ALL' ? sessionFilter : undefined }
+          : { period, date: selectedDate, sessionId: sessionFilter !== 'ALL' ? sessionFilter : undefined }
       );
       if (res.success && (res as any).totals) {
         const raw = res as unknown as TeacherRecapResponse & { success: boolean };
         setRecap(raw);
-        setLastUpdatedAt(new Date().toLocaleTimeString('id-ID'));
+        setLastUpdatedAt(`${formatWibTime24(new Date(), true)} WIB`);
       }
     } catch (err) {
       console.error('Failed to load teacher recap:', err);
     } finally {
       setLoading(false);
     }
-  }, [period, selectedDate, selectedMonth]);
+  }, [period, selectedDate, selectedMonth, sessionFilter]);
 
   useEffect(() => {
     fetchRecap(false);
@@ -2951,6 +3277,7 @@ const TeacherRecapSection: React.FC<{
       const logRows = filteredRecords.map((r, idx) => ({
         No: idx + 1,
         Tanggal: r.date,
+        Sesi: r.sessionName || '-',
         NIP: r.nip,
         Nama_Guru: r.teacherName,
         Jam_Masuk: r.timeIn || '-',
@@ -3116,6 +3443,21 @@ const TeacherRecapSection: React.FC<{
                 className="pl-8 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/30"
               />
             </div>
+
+            {teacherSessions.length > 0 && (
+              <select
+                value={sessionFilter}
+                onChange={e => setSessionFilter(e.target.value)}
+                className="px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+              >
+                <option value="ALL">Semua Sesi Guru</option>
+                {teacherSessions.map(ses => (
+                  <option key={ses.id} value={ses.id}>
+                    {ses.name} ({ses.startTime}–{ses.endTime})
+                  </option>
+                ))}
+              </select>
+            )}
 
             <select
               value={statusFilter}
@@ -3352,6 +3694,7 @@ const TeacherRecapSection: React.FC<{
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-semibold">
                   <th className="py-2.5 px-3">Tanggal</th>
+                  <th className="py-2.5 px-3">Sesi</th>
                   <th className="py-2.5 px-3">Nama Guru</th>
                   <th className="py-2.5 px-3">Masuk</th>
                   <th className="py-2.5 px-3">Pulang</th>
@@ -3362,7 +3705,7 @@ const TeacherRecapSection: React.FC<{
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filteredRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-slate-400">
+                    <td colSpan={7} className="py-8 text-center text-slate-400">
                       Belum ada log presensi pada periode ini.
                     </td>
                   </tr>
@@ -3371,6 +3714,9 @@ const TeacherRecapSection: React.FC<{
                     <tr key={rec.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                       <td className="py-2.5 px-3 font-semibold text-slate-800 dark:text-slate-200">
                         {formatTanggalIndo(rec.date)}
+                      </td>
+                      <td className="py-2.5 px-3 text-indigo-600 dark:text-indigo-400 font-semibold">
+                        {rec.sessionName || '-'}
                       </td>
                       <td className="py-2.5 px-3 font-bold text-slate-900 dark:text-white">{rec.teacherName}</td>
                       <td className="py-2.5 px-3 font-mono text-slate-600 dark:text-slate-300">{rec.timeIn || '-'}</td>
@@ -3442,10 +3788,11 @@ const TeacherRecapSection: React.FC<{
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-semibold">
                     <th className="py-2.5 px-3">Tanggal</th>
+                    <th className="py-2.5 px-3">Sesi</th>
                     <th className="py-2.5 px-3">Masuk</th>
                     <th className="py-2.5 px-3">Pulang</th>
                     <th className="py-2.5 px-3">Status</th>
-                    <th className="py-2.5 px-3">Metode & Catatan</th>
+                    <th className="py-2.5 px-3">Metode &amp; Catatan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -3456,7 +3803,7 @@ const TeacherRecapSection: React.FC<{
                     if (filteredInd.length === 0) {
                       return (
                         <tr>
-                          <td colSpan={5} className="py-8 text-center text-slate-400">
+                          <td colSpan={6} className="py-8 text-center text-slate-400">
                             {individualDateFilter
                               ? `Tidak ada catatan presensi pada tanggal ${formatTanggalIndo(individualDateFilter)}.`
                               : 'Belum ada riwayat presensi untuk guru ini.'}
@@ -3468,6 +3815,9 @@ const TeacherRecapSection: React.FC<{
                       <tr key={h.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                         <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">
                           {formatTanggalIndo(h.date)}
+                        </td>
+                        <td className="py-2.5 px-3 text-indigo-600 dark:text-indigo-400 font-semibold">
+                          {h.sessionName || '-'}
                         </td>
                         <td className="py-2.5 px-3 font-mono text-slate-600 dark:text-slate-300">{h.timeIn || '-'}</td>
                         <td className="py-2.5 px-3 font-mono text-slate-600 dark:text-slate-300">{h.timeOut || '-'}</td>

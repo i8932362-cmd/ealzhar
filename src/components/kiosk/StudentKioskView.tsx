@@ -19,9 +19,10 @@ import {
   Timer,
   AlertTriangle,
 } from 'lucide-react';
-import { Student, SchoolClass, ToiletPermit, FrequentToiletStudent } from '../../types/index.ts';
+import { Student, SchoolClass, ToiletPermit, FrequentToiletStudent, AttendanceSession } from '../../types/index.ts';
 import { useSync } from '../../context/SyncContext.tsx';
 import { queueStudentScanBatch, postWithOfflineFallback } from '../../lib/api.ts';
+import { formatWibTime24, getNextUpcomingSessionForType, sortSessions } from '../../lib/sessions.ts';
 import {
   loadFaceDetectionModels,
   areFaceModelsLoaded,
@@ -70,16 +71,21 @@ function computePermitCountdown(
   permit: ToiletPermit,
   babMinutes: number,
   bakMinutes: number,
+  otherMinutes: number,
   nowMs: number
 ) {
-  const type: 'BAB' | 'BAK' = permit.toiletType === 'BAB' ? 'BAB' : 'BAK';
+  const rawType = String(permit.toiletType || '').toUpperCase();
+  const type: 'BAB' | 'BAK' | 'LAINNYA' =
+    rawType === 'BAB' ? 'BAB' : rawType === 'LAINNYA' || rawType === 'OTHER' ? 'LAINNYA' : 'BAK';
   const limitMinutes =
-    permit.durationLimitMinutes || (type === 'BAB' ? babMinutes : bakMinutes);
+    permit.durationLimitMinutes ||
+    (type === 'BAB' ? babMinutes : type === 'BAK' ? bakMinutes : otherMinutes);
   const startMs = getPermitStartMs(permit);
   const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
   const remainingSec = limitMinutes * 60 - elapsedSec;
   return {
     type,
+    typeLabel: type === 'LAINNYA' ? 'Izin Lainnya' : type,
     limitMinutes,
     remainingSec,
     isExpired: remainingSec < 0,
@@ -97,11 +103,32 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
     faceTemplates,
     students,
     classes,
+    sessions,
+    activeStudentSession,
+    wibNowHhMm,
     notifyFaceDatabaseChanged,
   } = useSync();
 
+  const studentSessions = useMemo(
+    () => sortSessions(sessions.filter((s) => s.targetType === 'student')),
+    [sessions]
+  );
+
+  const nextStudentSession = useMemo(
+    () => (activeStudentSession ? null : getNextUpcomingSessionForType(sessions, 'student', wibNowHhMm)),
+    [sessions, activeStudentSession, wibNowHhMm]
+  );
+
+  const sessionTodayAttendance = useMemo(() => {
+    if (!activeStudentSession) return [];
+    return todayAttendance.filter(
+      (a) => !a.sessionId || String(a.sessionId) === String(activeStudentSession.id)
+    );
+  }, [todayAttendance, activeStudentSession]);
+
   const babMinutes = settings?.toiletBabMinutes ?? 10;
   const bakMinutes = settings?.toiletBakMinutes ?? 5;
+  const otherMinutes = settings?.toiletMaxMinutes ?? 10;
 
   // Camera & AI states (no blocking loading spinner when opening camera)
   const [isCameraActive, setIsCameraActive] = useState<boolean>(true);
@@ -160,9 +187,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
     const updateTime = () => {
       const now = new Date();
       setNowMs(now.getTime());
-      setCurrentTime(
-        now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      );
+      setCurrentTime(formatWibTime24(now, true));
       setCurrentDate(
         now.toLocaleDateString('id-ID', {
           weekday: 'long',
@@ -177,21 +202,21 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
     return () => clearInterval(timer);
   }, []);
 
-  // Alert once via tone + TTS when a student's toilet timer expires
+  // Alert once via tone + TTS when a student's toilet/leave timer expires
   useEffect(() => {
     if (!soundEnabled || activePermits.length === 0) return;
     for (const permit of activePermits) {
-      const countdown = computePermitCountdown(permit, babMinutes, bakMinutes, nowMs);
+      const countdown = computePermitCountdown(permit, babMinutes, bakMinutes, otherMinutes, nowMs);
       if (countdown.isExpired && !alertedExpiredIdsRef.current.has(permit.id)) {
         alertedExpiredIdsRef.current.add(permit.id);
         playWarningTone();
         speakIndonesian(
-          `Perhatian, waktu izin toilet ${permit.studentName || 'siswa'} telah habis`
+          `Perhatian, waktu izin keluar ${permit.studentName || 'siswa'} telah habis`
         );
         break;
       }
     }
-  }, [activePermits, babMinutes, bakMinutes, nowMs, soundEnabled]);
+  }, [activePermits, babMinutes, bakMinutes, otherMinutes, nowMs, soundEnabled]);
 
   // Keep refs synced immediately so detection loop matches against the latest face database
   const studentsRef = useRef<Student[]>([]);
@@ -327,6 +352,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 
           detectFacesInVideo(video)
             .then((detections) => {
+              if (!mountedRef.current || !streamRef.current) return;
               const ctx = canvas.getContext('2d');
               if (ctx) {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -421,23 +447,38 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
   // Enqueue student attendance into 3-second batch (no photos stored) + TTS
   const submitStudentAttendance = useCallback(
     async (matchedStudent: Student, code: string, method: 'FACE_SCAN' | 'BARCODE_SCAN') => {
-      const alreadyRecorded = todayAttendance.find((a) => a.studentId === matchedStudent.id);
+      if (!activeStudentSession) {
+        if (soundEnabled) {
+          playErrorBeep();
+          speakIndonesian('Di luar jam sesi presensi siswa yang aktif');
+        }
+        setStatusFeedback({
+          type: 'error',
+          title: 'Di Luar Jadwal Sesi Presensi Siswa',
+          message: nextStudentSession
+            ? `Sekarang pukul ${wibNowHhMm} WIB. Sesi berikutnya (${nextStudentSession.name}) dibuka otomatis pukul ${nextStudentSession.startTime}–${nextStudentSession.endTime} WIB.`
+            : `Sekarang pukul ${wibNowHhMm} WIB. Tidak ada sesi presensi siswa yang aktif saat ini.`,
+        });
+        return;
+      }
+
+      const alreadyRecorded = sessionTodayAttendance.find((a) => a.studentId === matchedStudent.id);
       if (alreadyRecorded) {
         if (soundEnabled) {
           playErrorBeep();
-          speakIndonesian(`Presensi ganda ditolak, ${matchedStudent.name} sudah presensi hari ini`);
+          speakIndonesian(`Presensi ganda ditolak, ${matchedStudent.name} sudah presensi pada sesi ini`);
         }
         setStatusFeedback({
           type: 'error',
           title: 'Presensi Ganda Ditolak',
-          message: `${matchedStudent.name} sudah melakukan presensi hari ini (${alreadyRecorded.timeIn} WIB - ${alreadyRecorded.status}).`,
+          message: `${matchedStudent.name} sudah presensi di sesi ${activeStudentSession.name} (${alreadyRecorded.timeIn} WIB - ${alreadyRecorded.status}).`,
         });
         return;
       }
 
       setStatusFeedback({
         type: 'pending',
-        title: 'Memproses Presensi...',
+        title: `Memproses Presensi (${activeStudentSession.name})...`,
         message: `${matchedStudent.name} masuk antrian batch (terkirim otomatis maks 3 detik).`,
       });
 
@@ -446,6 +487,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
           studentId: matchedStudent.id,
           barcodeCard: code,
           method,
+          sessionId: activeStudentSession.id,
         });
 
         if (res.offline) {
@@ -461,12 +503,12 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
           return;
         }
 
-        if (res.success && res.attendance) {
-          const isLate = res.attendance.status === 'Terlambat';
+        if (res.success && (res.attendance || res.deduped)) {
+          const isLate = res.attendance?.status === 'Terlambat';
           if (soundEnabled) {
             playSuccessChime();
             speakIndonesian(
-              `${matchedStudent.name}, presensi berhasil, ${isLate ? 'status terlambat' : 'hadir tepat waktu'}`
+              `${matchedStudent.name}, presensi ${activeStudentSession.name} berhasil, ${isLate ? 'status terlambat' : 'hadir tepat waktu'}`
             );
           }
           confetti({
@@ -477,8 +519,10 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 
           setStatusFeedback({
             type: 'success',
-            title: isLate ? 'Presensi Terlambat' : 'Presensi Berhasil!',
-            message: `${matchedStudent.name} (${res.attendance.timeIn} WIB) - Status: ${res.attendance.status}`,
+            title: isLate ? `Presensi Terlambat (${activeStudentSession.name})` : `Presensi Berhasil (${activeStudentSession.name})`,
+            message: res.attendance
+              ? `${matchedStudent.name} (${res.attendance.timeIn} WIB) - Status: ${res.attendance.status}`
+              : res.message || `${matchedStudent.name} berhasil presensi.`,
           });
 
           void notifyFaceDatabaseChanged();
@@ -487,7 +531,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
             playErrorBeep();
             speakIndonesian(
               res.duplicate
-                ? `Presensi ganda ditolak, ${matchedStudent.name} sudah presensi hari ini`
+                ? `Presensi ganda ditolak, ${matchedStudent.name} sudah presensi pada sesi ini`
                 : `Presensi ${matchedStudent.name} ditolak`
             );
           }
@@ -509,7 +553,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
         });
       }
     },
-    [todayAttendance, soundEnabled, notifyFaceDatabaseChanged]
+    [activeStudentSession, nextStudentSession, wibNowHhMm, sessionTodayAttendance, soundEnabled, notifyFaceDatabaseChanged]
   );
 
   // Process Card/RFID/Barcode Scan with strict biometric verification & deduplication
@@ -678,9 +722,9 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
   }, [statusFeedback]);
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] bg-slate-50 dark:bg-slate-950 p-4 sm:p-6 lg:p-8">
+    <div className="min-h-[calc(100dvh-4rem)] bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 lg:p-8">
       {/* Top Banner / Time Header */}
-      <div className="max-w-7xl mx-auto mb-6 flex flex-col md:flex-row items-center justify-between gap-4 p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+      <div className="max-w-7xl mx-auto mb-5 sm:mb-6 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
         <div className="flex items-center gap-4">
           {onReturnToPortal && (
             <button
@@ -701,7 +745,12 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
               {settings?.foundationAddress ? `${settings.foundationAddress} • ` : ''}Tahun Ajaran{' '}
-              {settings?.academicYear} • Batas Hadir: {settings?.lateCutoffTime} WIB
+              {settings?.academicYear} •{' '}
+              {activeStudentSession
+                ? `Sesi: ${activeStudentSession.name} (${activeStudentSession.startTime}–${activeStudentSession.endTime} WIB • Batas ${activeStudentSession.lateCutoffTime} WIB)`
+                : nextStudentSession
+                  ? `Sesi Berikutnya: ${nextStudentSession.name} (${nextStudentSession.startTime} WIB)`
+                  : 'Menunggu Jadwal Sesi Siswa'}
             </p>
           </div>
         </div>
@@ -713,7 +762,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
               <span>{currentDate}</span>
             </div>
             <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight text-slate-900 dark:text-white">
-              {currentTime || '--:--:--'}
+              {currentTime ? `${currentTime} WIB` : '--:--:--'}
             </div>
           </div>
 
@@ -730,6 +779,41 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
       {/* Main Kiosk Layout: Centered Scan Box & Camera Stage Above Monitoring Panels */}
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="max-w-3xl mx-auto space-y-5">
+          {/* Active Session Auto-Switch Status Card (Strict 24-Hour WIB & Per-Session Sheet Isolation) */}
+          {activeStudentSession ? (
+            <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
+                <div>
+                  <div className="font-black text-emerald-900 dark:text-emerald-200">
+                    Sesi Presensi Siswa Aktif: {activeStudentSession.name}
+                  </div>
+                  <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                    Jam Sesi: <strong>{activeStudentSession.startTime}–{activeStudentSession.endTime} WIB</strong> • Batas Tepat Waktu: <strong>{activeStudentSession.lateCutoffTime} WIB</strong>
+                  </div>
+                </div>
+              </div>
+              <span className="px-2.5 py-1 rounded-lg bg-white/80 dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 font-mono text-[11px] font-bold text-emerald-800 dark:text-emerald-300">
+                Sheet: {activeStudentSession.sheetName}
+              </span>
+            </div>
+          ) : (
+            <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <Clock className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                <div>
+                  <div className="font-black text-amber-900 dark:text-amber-200">
+                    Di Luar Jadwal Sesi Presensi Siswa ({wibNowHhMm} WIB)
+                  </div>
+                  <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                    {nextStudentSession
+                      ? `Sesi "${nextStudentSession.name}" otomatis aktif pukul ${nextStudentSession.startTime}–${nextStudentSession.endTime} WIB.`
+                      : 'Belum ada sesi presensi siswa aktif. Admin dapat mengatur jadwal sesi di Menu Admin.'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           {/* 1. Kotak Scan Kartu / RFID berada di ATAS Kamera Scan Siswa */}
           <div
             onClick={() => scanInputRef.current?.focus()}
@@ -915,7 +999,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
               <div className="absolute bottom-12 left-5 right-5 flex flex-col gap-2 pointer-events-auto">
                 {detectedStudentsInFrame.map(({ student }) => {
                   const clsName = classes.find((c) => c.id === student.classId)?.name;
-                  const alreadyDone = todayAttendance.find((a) => a.studentId === student.id);
+                  const alreadyDone = sessionTodayAttendance.find((a) => a.studentId === student.id);
                   return (
                     <div
                       key={student.id}
@@ -944,6 +1028,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 
                       <button
                         type="button"
+                        disabled={!activeStudentSession}
                         onClick={() =>
                           void submitStudentAttendance(
                             student,
@@ -952,12 +1037,18 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                           )
                         }
                         className={`px-4 py-2 rounded-xl text-xs font-bold transition shadow ${
-                          alreadyDone
-                            ? 'bg-slate-700 text-slate-200 cursor-default'
-                            : 'bg-white text-emerald-700 hover:bg-emerald-50 cursor-pointer'
+                          !activeStudentSession
+                            ? 'bg-slate-700 text-slate-300 cursor-not-allowed'
+                            : alreadyDone
+                              ? 'bg-slate-700 text-slate-200 cursor-default'
+                              : 'bg-white text-emerald-700 hover:bg-emerald-50 cursor-pointer'
                         }`}
                       >
-                        {alreadyDone ? `Sudah Presensi (${alreadyDone.timeIn})` : 'Catat Presensi'}
+                        {!activeStudentSession
+                          ? 'Di Luar Jam Sesi'
+                          : alreadyDone
+                            ? `Sudah Presensi (${alreadyDone.timeIn})`
+                            : 'Catat Presensi'}
                       </button>
                     </div>
                   );
@@ -983,7 +1074,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
           </div>
 
           {/* 3. Quick Action Buttons */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             <button
               onClick={() => setShowManualModal(true)}
               className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-blue-400 dark:hover:border-blue-500 transition shadow-sm text-left group"
@@ -1006,9 +1097,9 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                 <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">Timer Hitung Mundur</span>
                 <Timer className="w-4 h-4 text-slate-400 group-hover:text-amber-500 transition" />
               </div>
-              <div className="font-bold text-slate-900 dark:text-white text-base">Menu Izin Toilet</div>
+              <div className="font-bold text-slate-900 dark:text-white text-base">Menu Izin Toilet / Keluar</div>
               <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                BAB {babMinutes}m • BAK {bakMinutes}m • Konfirmasi Centang
+                Ketik nama • BAK {bakMinutes}m / BAB {babMinutes}m / Lainnya {otherMinutes}m
               </div>
             </button>
           </div>
@@ -1041,7 +1132,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
             ) : (
               <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
                 {activePermits.map((permit) => {
-                  const cd = computePermitCountdown(permit, babMinutes, bakMinutes, nowMs);
+                  const cd = computePermitCountdown(permit, babMinutes, bakMinutes, otherMinutes, nowMs);
                   const isBusy = returningPermitId === permit.id;
                   return (
                     <div
@@ -1061,14 +1152,17 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                             className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                               cd.type === 'BAB'
                                 ? 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
+                                : cd.type === 'LAINNYA'
+                                ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300'
                                 : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'
                             }`}
                           >
-                            {cd.type} ({cd.limitMinutes}m)
+                            {cd.typeLabel} ({cd.limitMinutes}m)
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                          {permit.className ? `${permit.className} • ` : ''}Keluar pukul {permit.timeOut} WIB
+                          {permit.className ? `${permit.className} • ` : ''}Keluar {permit.timeOut} WIB
+                          {permit.reason ? ` • ${permit.reason}` : ''}
                         </div>
                       </div>
 
@@ -1091,9 +1185,9 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                           type="button"
                           disabled={isBusy}
                           onClick={() => void handleConfirmToiletReturn(permit)}
-                          title="Konfirmasi Siswa Sudah Kembali"
-                          aria-label={`Konfirmasi ${permit.studentName} kembali`}
-                          className="w-9 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow transition disabled:opacity-50"
+                          title="Konfirmasi Kembali / Selesai"
+                          aria-label={`Konfirmasi ${permit.studentName} kembali / selesai`}
+                          className="w-9 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white flex items-center justify-center shadow transition disabled:opacity-50"
                         >
                           {isBusy ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -1150,6 +1244,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                         </div>
                         <div className="text-[11px] text-slate-500 dark:text-slate-400">
                           {item.className || 'Kelas'} • BAB {item.babCount}x • BAK {item.bakCount}x
+                          {(item.otherCount || 0) > 0 ? ` • Lainnya ${item.otherCount}x` : ''}
                         </div>
                       </div>
                     </div>
@@ -1170,24 +1265,28 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
             )}
           </div>
 
-          {/* Attendance Today Card (Auto-reloads continuously, no manual sync button) */}
+          {/* Attendance Today Card (Auto-reloads continuously per active session, isolated from other sessions) */}
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
             <div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                Sudah Presensi Hari Ini
+                Sudah Presensi Hari Ini {activeStudentSession ? `— ${activeStudentSession.name}` : ''}
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Total {todayAttendance.length} siswa tercatat (sinkron otomatis dari Google Sheets)
+                {activeStudentSession
+                  ? `Total ${sessionTodayAttendance.length} siswa tercatat di Sheet "${activeStudentSession.sheetName}"`
+                  : 'Menunggu sesi presensi siswa aktif (sinkron otomatis).'}
               </p>
             </div>
 
             <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-              {todayAttendance.length === 0 ? (
+              {sessionTodayAttendance.length === 0 ? (
                 <div className="py-10 text-center text-slate-400 text-xs">
-                  Belum ada siswa yang presensi hari ini.
+                  {activeStudentSession
+                    ? `Belum ada siswa yang presensi pada sesi ${activeStudentSession.name} hari ini.`
+                    : 'Tidak ada sesi presensi siswa yang sedang aktif.'}
                 </div>
               ) : (
-                todayAttendance.map((item) => (
+                sessionTodayAttendance.map((item) => (
                   <div
                     key={item.id}
                     className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 flex items-center justify-between transition hover:border-slate-300 dark:hover:border-slate-700"
@@ -1233,6 +1332,8 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
         <ManualAttendanceModal
           classes={classes}
           students={students}
+          studentSessions={studentSessions}
+          activeStudentSession={activeStudentSession}
           onClose={() => setShowManualModal(false)}
           onSuccess={() => {
             setShowManualModal(false);
@@ -1249,6 +1350,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
           frequentToiletStudents={frequentToiletStudents}
           babMinutes={babMinutes}
           bakMinutes={bakMinutes}
+          otherMinutes={otherMinutes}
           nowMs={nowMs}
           onConfirmReturn={handleConfirmToiletReturn}
           returningPermitId={returningPermitId}
@@ -1267,11 +1369,16 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 const ManualAttendanceModal: React.FC<{
   classes: SchoolClass[];
   students: Student[];
+  studentSessions: AttendanceSession[];
+  activeStudentSession: AttendanceSession | null;
   onClose: () => void;
   onSuccess: () => void;
-}> = ({ classes, students, onClose, onSuccess }) => {
+}> = ({ classes, students, studentSessions, activeStudentSession, onClose, onSuccess }) => {
   const [selectedClassId, setSelectedClassId] = useState<string>(classes[0]?.id || '');
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
+  const [selectedSessionId, setSelectedSessionId] = useState<string>(
+    activeStudentSession?.id || studentSessions[0]?.id || ''
+  );
   const [status, setStatus] = useState<'Hadir' | 'Terlambat' | 'Izin' | 'Sakit' | 'Alpa'>('Izin');
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1294,6 +1401,7 @@ const ManualAttendanceModal: React.FC<{
         studentId: selectedStudentId,
         status,
         notes,
+        sessionId: selectedSessionId || undefined,
       });
 
       if (res.success) {
@@ -1309,10 +1417,10 @@ const ManualAttendanceModal: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-      <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+      <div className="w-full max-w-lg max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
         <h3 className="text-lg font-bold text-slate-900 dark:text-white">Presensi Manual Petugas</h3>
-        <p className="text-xs text-slate-500 mb-5">Tercatat sebagai metode MANUAL dan masuk ke sheet Log.</p>
+        <p className="text-xs text-slate-500 mb-5">Tercatat ke Sheet khusus sesi yang dipilih dan masuk ke sheet Log.</p>
 
         {error && (
           <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs">
@@ -1321,6 +1429,25 @@ const ManualAttendanceModal: React.FC<{
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {studentSessions.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Sesi Presensi Siswa (24 Jam WIB)
+              </label>
+              <select
+                value={selectedSessionId}
+                onChange={(e) => setSelectedSessionId(e.target.value)}
+                className="w-full px-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+              >
+                {studentSessions.map((ses) => (
+                  <option key={ses.id} value={ses.id}>
+                    {ses.name} ({ses.startTime}–{ses.endTime} WIB) • {ses.sheetName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Pilih Kelas</label>
             <select
@@ -1410,7 +1537,7 @@ const ManualAttendanceModal: React.FC<{
   );
 };
 
-// Modal: Menu Izin ke Toilet (BAK / BAB, Hitung Mundur, Centang Kembali, & Daftar Sering Izin)
+// Modal: Menu Izin ke Toilet / Keluar Kelas (Ketik Nama Dulu -> Pilih BAK / BAB / Izin Lainnya -> Centang Kembali/Selesai)
 const ToiletPermitModal: React.FC<{
   students: Student[];
   classes: SchoolClass[];
@@ -1418,6 +1545,7 @@ const ToiletPermitModal: React.FC<{
   frequentToiletStudents: FrequentToiletStudent[];
   babMinutes: number;
   bakMinutes: number;
+  otherMinutes: number;
   nowMs: number;
   onConfirmReturn: (permit: ToiletPermit) => Promise<void>;
   returningPermitId: string | null;
@@ -1430,6 +1558,7 @@ const ToiletPermitModal: React.FC<{
   frequentToiletStudents,
   babMinutes,
   bakMinutes,
+  otherMinutes,
   nowMs,
   onConfirmReturn,
   returningPermitId,
@@ -1438,22 +1567,32 @@ const ToiletPermitModal: React.FC<{
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
-  const [toiletType, setToiletType] = useState<'BAK' | 'BAB'>('BAK');
+  const [toiletType, setToiletType] = useState<'BAK' | 'BAB' | 'LAINNYA'>('BAK');
+  const [customReason, setCustomReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const filtered = students
-    .filter(
-      (s) =>
-        s.isActive &&
-        (s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          s.nis.includes(searchTerm) ||
-          s.barcodeCard.toLowerCase().includes(searchTerm.toLowerCase()))
-    )
-    .slice(0, 8);
+  const trimmedQuery = searchTerm.trim();
+  const filtered = trimmedQuery.length === 0
+    ? []
+    : students
+        .filter(
+          (s) =>
+            s.isActive &&
+            (s.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
+              s.nis.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
+              s.barcodeCard.toLowerCase().includes(trimmedQuery.toLowerCase()))
+        )
+        .slice(0, 10);
+
+  const selectedLimitMinutes =
+    toiletType === 'BAB' ? babMinutes : toiletType === 'BAK' ? bakMinutes : otherMinutes;
 
   const handleStartPermit = async () => {
-    if (!selectedStudent) return;
+    if (!selectedStudent) {
+      setError('Ketik nama dan pilih siswa terlebih dahulu.');
+      return;
+    }
     setIsSubmitting(true);
     setError(null);
 
@@ -1461,12 +1600,13 @@ const ToiletPermitModal: React.FC<{
       const res = await postWithOfflineFallback('toiletStart', {
         studentId: selectedStudent.id,
         toiletType,
+        reason: toiletType === 'LAINNYA' ? customReason.trim() : '',
       });
 
       if (res.success) {
         onSuccess();
       } else {
-        setError(res.error || 'Gagal mencatat izin keluar toilet.');
+        setError(res.error || 'Gagal mencatat izin keluar kelas.');
       }
     } catch (err: any) {
       setError(err?.message || 'Terjadi kesalahan.');
@@ -1476,19 +1616,19 @@ const ToiletPermitModal: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150 overflow-y-auto">
-      <div className="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 my-8 space-y-6">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+      <div className="w-full max-w-2xl max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Menu Izin Keluar Kelas (Toilet)</h3>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Menu Izin Keluar Kelas</h3>
             <p className="text-xs text-slate-500">
-              Pilih jenis izin (BAK {bakMinutes} menit / BAB {babMinutes} menit). Timer hitung mundur berjalan otomatis.
+              Ketik nama siswa dulu, lalu tentukan izin BAK ({bakMinutes}m), BAB ({babMinutes}m), atau Izin Lainnya ({otherMinutes}m).
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300"
+            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300 flex-shrink-0"
           >
             Tutup
           </button>
@@ -1500,13 +1640,89 @@ const ToiletPermitModal: React.FC<{
           </div>
         )}
 
-        {/* Section 1: Form Izin Keluar */}
+        {/* Section 1: Langkah 1 Ketik Nama Siswa -> Langkah 2 Tentukan Jenis Izin */}
         <div className="space-y-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+          {/* Langkah 1: Ketik Nama Dulu */}
           <div>
             <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">
-              1. Pilih Keperluan Izin & Durasi
+              1. Ketik Nama atau NIS Siswa
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            {selectedStudent ? (
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-black text-slate-900 dark:text-white truncate">
+                    {selectedStudent.name}
+                  </div>
+                  <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                    {classes.find((c) => c.id === selectedStudent.classId)?.name || 'Kelas'} • NIS: {selectedStudent.nis}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStudent(null);
+                    setSearchTerm('');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 flex-shrink-0"
+                >
+                  Ganti Siswa
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <input
+                    type="text"
+                    autoFocus
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Ketik nama atau NIS siswa terlebih dahulu..."
+                    className="w-full pl-10 pr-4 py-2.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+
+                {trimmedQuery.length === 0 ? (
+                  <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+                    Ketik minimal 1 huruf nama atau NIS siswa untuk memilih siswa.
+                  </p>
+                ) : filtered.length === 0 ? (
+                  <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+                    Siswa dengan kata kunci "{trimmedQuery}" tidak ditemukan.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto mt-2">
+                    {filtered.map((s) => {
+                      const cls = classes.find((c) => c.id === s.classId);
+                      return (
+                        <button
+                          type="button"
+                          key={s.id}
+                          onClick={() => setSelectedStudent(s)}
+                          className="w-full p-2.5 rounded-xl border text-left flex items-center justify-between text-xs transition bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 hover:border-amber-400 hover:bg-amber-50/40 dark:hover:bg-amber-950/20"
+                        >
+                          <div>
+                            <div className="font-bold">{s.name}</div>
+                            <div className="text-[11px] opacity-75">
+                              {cls?.name || 'Kelas'} • NIS: {s.nis}
+                            </div>
+                          </div>
+                          <span className="font-bold text-amber-600 text-[11px]">Pilih</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Langkah 2: Tentukan Izin BAB / BAK / Izin Lainnya */}
+          <div className={!selectedStudent ? 'opacity-60' : ''}>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">
+              2. Tentukan Jenis Izin
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <button
                 type="button"
                 onClick={() => setToiletType('BAK')}
@@ -1516,9 +1732,9 @@ const ToiletPermitModal: React.FC<{
                     : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
                 }`}
               >
-                <div className="font-black text-sm">BAK (Buang Air Kecil)</div>
+                <div className="font-black text-sm">BAK</div>
                 <div className={`text-[11px] mt-0.5 ${toiletType === 'BAK' ? 'text-sky-100' : 'text-slate-500'}`}>
-                  Batas waktu: {bakMinutes} menit
+                  Buang Air Kecil • {bakMinutes} menit
                 </div>
               </button>
 
@@ -1531,68 +1747,53 @@ const ToiletPermitModal: React.FC<{
                     : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
                 }`}
               >
-                <div className="font-black text-sm">BAB (Buang Air Besar)</div>
+                <div className="font-black text-sm">BAB</div>
                 <div className={`text-[11px] mt-0.5 ${toiletType === 'BAB' ? 'text-purple-100' : 'text-slate-500'}`}>
-                  Batas waktu: {babMinutes} menit
+                  Buang Air Besar • {babMinutes} menit
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setToiletType('LAINNYA')}
+                className={`p-3 rounded-xl border text-left transition ${
+                  toiletType === 'LAINNYA'
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
+                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                }`}
+              >
+                <div className="font-black text-sm">Izin Lainnya</div>
+                <div className={`text-[11px] mt-0.5 ${toiletType === 'LAINNYA' ? 'text-indigo-100' : 'text-slate-500'}`}>
+                  Keperluan lain • {otherMinutes} menit
                 </div>
               </button>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">
-              2. Pilih Siswa
-            </label>
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Cari nama / NIS / scan kartu siswa..."
-                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl"
-              />
-            </div>
-
-            <div className="space-y-1.5 max-h-40 overflow-y-auto mt-2">
-              {filtered.map((s) => {
-                const cls = classes.find((c) => c.id === s.classId);
-                const isSelected = selectedStudent?.id === s.id;
-                return (
-                  <button
-                    type="button"
-                    key={s.id}
-                    onClick={() => setSelectedStudent(s)}
-                    className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between text-xs transition ${
-                      isSelected
-                        ? 'bg-amber-500/15 border-amber-500 text-amber-900 dark:text-amber-200'
-                        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-bold">{s.name}</div>
-                      <div className="text-[11px] opacity-75">
-                        {cls?.name || 'Kelas'} • NIS: {s.nis}
-                      </div>
-                    </div>
-                    {isSelected && <span className="font-bold text-amber-600">Terpilih</span>}
-                  </button>
-                );
-              })}
-            </div>
+            {toiletType === 'LAINNYA' && (
+              <div className="mt-3">
+                <input
+                  type="text"
+                  value={customReason}
+                  onChange={(e) => setCustomReason(e.target.value)}
+                  placeholder="Keterangan izin lainnya (mis. UKS, ambil buku, dipanggil guru)..."
+                  className="w-full px-3.5 py-2.5 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            )}
           </div>
 
           {selectedStudent && (
-            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex items-center justify-between gap-2">
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               <span>
-                Siswa terpilih: <strong>{selectedStudent.name}</strong> ({toiletType} •{' '}
-                {toiletType === 'BAB' ? babMinutes : bakMinutes} menit)
+                Siswa: <strong>{selectedStudent.name}</strong> •{' '}
+                <strong>{toiletType === 'LAINNYA' ? 'Izin Lainnya' : toiletType}</strong> ({selectedLimitMinutes} menit)
+                {toiletType === 'LAINNYA' && customReason.trim() ? ` — ${customReason.trim()}` : ''}
               </span>
               <button
                 type="button"
                 onClick={handleStartPermit}
                 disabled={isSubmitting}
-                className="px-4 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-600 text-white shadow disabled:opacity-50"
+                className="px-4 py-2.5 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-600 text-white shadow disabled:opacity-50 flex-shrink-0"
               >
                 {isSubmitting ? 'Mencatat...' : 'Mulai Timer Izin'}
               </button>
@@ -1611,7 +1812,7 @@ const ToiletPermitModal: React.FC<{
             ) : (
               <div className="space-y-2 max-h-44 overflow-y-auto">
                 {activePermits.map((permit) => {
-                  const cd = computePermitCountdown(permit, babMinutes, bakMinutes, nowMs);
+                  const cd = computePermitCountdown(permit, babMinutes, bakMinutes, otherMinutes, nowMs);
                   const isBusy = returningPermitId === permit.id;
                   return (
                     <div
@@ -1622,8 +1823,9 @@ const ToiletPermitModal: React.FC<{
                         <div className="font-bold text-slate-900 dark:text-white truncate">
                           {permit.studentName}
                         </div>
-                        <div className="text-[10px] text-slate-500">
-                          {cd.type} • Keluar {permit.timeOut}
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {cd.typeLabel} • Keluar {permit.timeOut}
+                          {permit.reason ? ` (${permit.reason})` : ''}
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -1640,10 +1842,15 @@ const ToiletPermitModal: React.FC<{
                           type="button"
                           disabled={isBusy}
                           onClick={() => void onConfirmReturn(permit)}
-                          title="Konfirmasi Kembali"
-                          className="w-7 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center"
+                          title="Konfirmasi Kembali / Selesai"
+                          aria-label={`Konfirmasi ${permit.studentName} kembali / selesai`}
+                          className="w-8 h-8 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white flex items-center justify-center shadow-xs disabled:opacity-50"
                         >
-                          <Check className="w-4 h-4 stroke-[2.5]" />
+                          {isBusy ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Check className="w-4 h-4 stroke-[2.5]" />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -1672,6 +1879,7 @@ const ToiletPermitModal: React.FC<{
                       </div>
                       <div className="text-[10px] text-slate-500">
                         {item.className || 'Kelas'} • BAB {item.babCount}x • BAK {item.bakCount}x
+                        {(item.otherCount || 0) > 0 ? ` • Lainnya ${item.otherCount}x` : ''}
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded-lg bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-bold text-[10px] flex-shrink-0">

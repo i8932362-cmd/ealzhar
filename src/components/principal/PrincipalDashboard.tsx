@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useSync } from '../../context/SyncContext.tsx';
 import { gasGet, gasPost } from '../../lib/api.ts';
 import { getMissingFrontendConfigKeys } from '../../lib/gasConfig.ts';
+import { formatWibTime24 } from '../../lib/sessions.ts';
 import { SystemCheckReport } from '../../types/index.ts';
 import {
   ShieldCheck,
@@ -29,6 +30,7 @@ export const PrincipalDashboard: React.FC = () => {
     activePermits,
     faceTemplates,
     settings,
+    activeStudentSession,
     activeUsers,
     serverVersion,
     lastSyncedAt,
@@ -158,7 +160,7 @@ export const PrincipalDashboard: React.FC = () => {
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Memeriksa integritas koneksi Google Sheets, Google Drive, dan mendeteksi bagian konfigurasi yang masih kosong (nilai rahasia tidak pernah ditampilkan).
-                {lastCheckedAt ? ` Terakhir diuji: ${lastCheckedAt.toLocaleTimeString('id-ID')}.` : ''}
+                {lastCheckedAt ? ` Terakhir diuji: ${formatWibTime24(lastCheckedAt, true)} WIB.` : ''}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:self-center">
@@ -461,10 +463,13 @@ export const PrincipalDashboard: React.FC = () => {
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <Users className="w-4 h-4 text-blue-600" />
-                <span>Log Kehadiran Siswa Terbaru Hari Ini</span>
+                <span>
+                  Log Kehadiran Siswa Hari Ini
+                  {activeStudentSession ? ` (${activeStudentSession.name})` : ''}
+                </span>
               </h3>
               <span className="text-[11px] text-slate-400">
-                {lastSyncedAt ? `Sinkron otomatis: ${lastSyncedAt.toLocaleTimeString('id-ID')}` : ''}
+                {lastSyncedAt ? `Sinkron otomatis: ${formatWibTime24(lastSyncedAt, true)} WIB` : ''}
               </span>
             </div>
 

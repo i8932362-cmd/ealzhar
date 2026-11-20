@@ -8,6 +8,12 @@ import {
   buildShareableLockedConfigUrl,
   pushGasConfigToServer,
 } from '../../lib/gasConfig.ts';
+import {
+  getCachedSuperadminMeta,
+  updateCachedSuperadminPassword,
+} from '../../lib/superadminCache.ts';
+import { formatWibDateTime24 } from '../../lib/sessions.ts';
+import { PasswordInput } from '../common/PasswordInput.tsx';
 import { APPS_SCRIPT_CODE, APPS_SCRIPT_DEPLOY_GUIDE } from '../../lib/appsScriptTemplate.ts';
 import {
   UserCog,
@@ -28,6 +34,7 @@ import {
   ChevronDown,
   ChevronUp,
   Globe,
+  KeyRound,
 } from 'lucide-react';
 
 interface SystemCheckResult {
@@ -64,6 +71,13 @@ export const SuperadminDashboard: React.FC = () => {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [showCodeSection, setShowCodeSection] = useState(false);
   const [showGuideSection, setShowGuideSection] = useState(false);
+
+  // Superadmin Password Cache Management
+  const [saMeta, setSaMeta] = useState(() => getCachedSuperadminMeta());
+  const [currentSaPass, setCurrentSaPass] = useState('');
+  const [newSaPass, setNewSaPass] = useState('');
+  const [confirmSaPass, setConfirmSaPass] = useState('');
+  const [saPassFeedback, setSaPassFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const reloadConfigState = () => {
     const cfg = getGasConfig();
@@ -183,13 +197,35 @@ export const SuperadminDashboard: React.FC = () => {
     }
   };
 
+  const handleChangeSuperadminPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaPassFeedback(null);
+    if (newSaPass !== confirmSaPass) {
+      setSaPassFeedback({ type: 'error', text: 'Konfirmasi sandi baru tidak cocok.' });
+      return;
+    }
+    const res = updateCachedSuperadminPassword(currentSaPass, newSaPass);
+    if (res.ok) {
+      setSaMeta(getCachedSuperadminMeta());
+      setCurrentSaPass('');
+      setNewSaPass('');
+      setConfirmSaPass('');
+      setSaPassFeedback({
+        type: 'success',
+        text: 'Sandi Superadmin baru berhasil disimpan di cache aplikasi. Admin tidak dapat melihat atau mengubah sandi ini.',
+      });
+    } else {
+      setSaPassFeedback({ type: 'error', text: res.error || 'Gagal memperbarui sandi Superadmin.' });
+    }
+  };
+
   const shareableUrl = buildShareableLockedConfigUrl();
   const vercelEnvSnippet = `APPS_SCRIPT_URL=${gasUrl.trim()}\nAPPS_SCRIPT_TOKEN=${gasToken.trim()}\nVITE_APPS_SCRIPT_URL=${gasUrl.trim()}\nVITE_APPS_SCRIPT_TOKEN=${gasToken.trim()}`;
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div className="max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5 sm:space-y-6">
       {/* Header Banner */}
-      <div className="rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 p-6 sm:p-8 text-white shadow-xl border border-slate-700/60">
+      <div className="rounded-3xl bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 p-5 sm:p-8 text-white shadow-xl border border-slate-700/60">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center">
@@ -472,8 +508,96 @@ export const SuperadminDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Keamanan Sandi Superadmin (Tersimpan di Cache Aplikasi, Terisolasi dari Admin) */}
+      <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 sm:p-6 shadow-sm space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-indigo-600" />
+              <span>Sandi Superadmin (Cache Aplikasi)</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Sandi Superadmin disimpan aman di cache lokal aplikasi dan tidak dapat dilihat atau diubah oleh Admin.
+            </p>
+          </div>
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+            {saMeta.storedInCache ? 'Tersimpan di Cache Aplikasi' : 'Belum Diatur'}
+          </span>
+        </div>
+
+        {saMeta.updatedAt && (
+          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+            Terakhir diperbarui di cache: <strong>{formatWibDateTime24(saMeta.updatedAt)}</strong>
+          </div>
+        )}
+
+        {saPassFeedback && (
+          <div
+            className={`p-3 rounded-xl text-xs flex items-center gap-2 border ${
+              saPassFeedback.type === 'success'
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+            }`}
+          >
+            {saPassFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{saPassFeedback.text}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleChangeSuperadminPassword} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Sandi Saat Ini
+            </label>
+            <PasswordInput
+              value={currentSaPass}
+              onChange={(e) => setCurrentSaPass(e.target.value)}
+              placeholder="Sandi Superadmin saat ini"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Sandi Baru (Min 5 karakter)
+            </label>
+            <PasswordInput
+              value={newSaPass}
+              onChange={(e) => setNewSaPass(e.target.value)}
+              placeholder="Masukkan sandi baru"
+              minLength={5}
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Ulangi Sandi Baru
+            </label>
+            <PasswordInput
+              value={confirmSaPass}
+              onChange={(e) => setConfirmSaPass(e.target.value)}
+              placeholder="Ulangi sandi baru"
+              minLength={5}
+              required
+            />
+          </div>
+          <div className="sm:col-span-3 flex justify-end pt-1">
+            <button
+              type="submit"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>Simpan Sandi Superadmin ke Cache</span>
+            </button>
+          </div>
+        </form>
+      </div>
+
       {/* Collapsible Apps Script Code & Deploy Guide */}
-      <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-sm space-y-3">
+      <div className="rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 sm:p-6 shadow-sm space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
             <Code2 className="w-4 h-4 text-blue-600" />

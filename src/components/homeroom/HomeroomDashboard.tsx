@@ -20,6 +20,7 @@ export const HomeroomDashboard: React.FC = () => {
     todayAttendance,
     activePermits,
     settings,
+    activeStudentSession,
     serverDate,
     notifyFaceDatabaseChanged,
   } = useSync();
@@ -113,6 +114,7 @@ export const HomeroomDashboard: React.FC = () => {
         status: correctionStatus,
         notes: `Koreksi: ${correctionReason}`,
         date: correctionTarget.date,
+        sessionId: correctionTarget.sessionId || activeStudentSession?.id || undefined,
         expectedUpdatedAt: correctionTarget.diubah_pada || correctionTarget.updatedAt || undefined,
       });
 
@@ -195,7 +197,9 @@ export const HomeroomDashboard: React.FC = () => {
         <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
           <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Terlambat</span>
           <div className="text-2xl font-black text-amber-500 mt-1">{lateCount}</div>
-          <span className="text-[11px] text-slate-400">&gt; {settings?.lateCutoffTime}</span>
+          <span className="text-[11px] text-slate-400">
+            &gt; {activeStudentSession?.lateCutoffTime || settings?.lateCutoffTime} WIB
+          </span>
         </div>
 
         <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
@@ -333,6 +337,8 @@ export const HomeroomDashboard: React.FC = () => {
                               timeIn: '07:00:00',
                               status: 'Izin',
                               method: 'MANUAL',
+                              sessionId: activeStudentSession?.id,
+                              sessionName: activeStudentSession?.name,
                               createdAt: '',
                               updatedAt: '',
                               updatedBy: '',
@@ -364,8 +370,8 @@ export const HomeroomDashboard: React.FC = () => {
       )}
 
       {correctionTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800">
             <h3 className="text-base font-bold text-slate-900 dark:text-white">Koreksi Status Presensi</h3>
             <p className="text-xs text-slate-500 mb-4">Perubahan status akan dicatat ke sheet Log Google Sheets.</p>
 
@@ -472,8 +478,8 @@ const StudentDetailModal: React.FC<{
   const rate = total > 0 ? Math.round(((hadirCount + lateCount) / total) * 100) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-      <div className="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 space-y-6">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+      <div className="w-full max-w-2xl max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 space-y-6">
         <div className="flex items-start justify-between">
           <div>
             <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">

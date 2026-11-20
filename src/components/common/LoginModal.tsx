@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { AuthUser } from '../../types/index.ts';
+import { PasswordInput } from './PasswordInput.tsx';
 import {
   X,
   Lock,
@@ -88,21 +89,22 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150 overflow-y-auto">
-      <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-150 my-4">
-        <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-sm">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+      <div className="w-full max-w-lg max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-150">
+        <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2.5 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-sm flex-shrink-0">
               {viewMode === 'superadmin' ? <User className="w-5 h-5" /> : <KeyRound className="w-5 h-5" />}
             </div>
-            <div>
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white">{getModalTitle()}</h3>
+            <div className="min-w-0">
+              <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white truncate">{getModalTitle()}</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">{getModalSubtitle()}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl"
+            className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl flex-shrink-0"
+            aria-label="Tutup dialog login"
           >
             <X className="w-5 h-5" />
           </button>
@@ -126,12 +128,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               onClick={handleChooseStudentKiosk}
               className="w-full group relative p-4 rounded-2xl border-2 border-blue-200 dark:border-blue-900 hover:border-blue-600 bg-gradient-to-r from-blue-50/50 via-white to-white dark:from-blue-950/20 dark:via-slate-900 dark:to-slate-900 text-left transition-all hover:shadow-md flex items-center justify-between"
             >
-              <div className="flex items-center gap-3.5">
+              <div className="flex items-center gap-3.5 min-w-0">
                 <div className="w-11 h-11 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold shadow-md shadow-blue-500/20 flex-shrink-0">
                   <GraduationCap className="w-6 h-6" />
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-black text-sm text-slate-900 dark:text-white group-hover:text-blue-600 transition">
                       Presensi Siswa
                     </span>
@@ -157,12 +159,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               }}
               className="w-full group relative p-4 rounded-2xl border-2 border-indigo-200 dark:border-indigo-900 hover:border-indigo-600 bg-gradient-to-r from-indigo-50/50 via-white to-white dark:from-indigo-950/20 dark:via-slate-900 dark:to-slate-900 text-left transition-all hover:shadow-md flex items-center justify-between"
             >
-              <div className="flex items-center gap-3.5">
+              <div className="flex items-center gap-3.5 min-w-0">
                 <div className="w-11 h-11 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold shadow-md shadow-indigo-500/20 flex-shrink-0">
                   <Briefcase className="w-6 h-6" />
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-black text-sm text-slate-900 dark:text-white group-hover:text-indigo-600 transition">
                       Presensi Guru
                     </span>
@@ -188,11 +190,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               }}
               className="w-full group relative p-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 hover:border-slate-600 bg-gradient-to-r from-slate-50 via-white to-white dark:from-slate-800/40 dark:via-slate-900 dark:to-slate-900 text-left transition-all hover:shadow-md flex items-center justify-between"
             >
-              <div className="flex items-center gap-3.5">
+              <div className="flex items-center gap-3.5 min-w-0">
                 <div className="w-11 h-11 rounded-xl bg-slate-900 dark:bg-slate-800 text-white flex items-center justify-center font-bold shadow-md flex-shrink-0">
                   <ShieldCheck className="w-6 h-6 text-blue-400" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-black text-sm text-slate-900 dark:text-white group-hover:text-blue-600 transition">
                       Login Staf, Kepala Sekolah & Admin
@@ -235,14 +237,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   Username
                 </label>
                 <div className="relative">
-                  <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     placeholder={
                       viewMode === 'superadmin'
-                        ? 'superadmin'
+                        ? 'Masukkan username superadmin'
                         : viewMode === 'teacher'
                           ? 'Masukkan username guru Anda'
                           : 'Masukkan username Anda'
@@ -257,16 +259,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                   Password
                 </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Masukkan kata sandi"
-                    className="w-full pl-10 pr-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
+                <PasswordInput
+                  leftIcon={<Lock className="w-4 h-4" />}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Masukkan kata sandi"
+                />
               </div>
 
               <button
@@ -287,7 +285,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
             {viewMode === 'superadmin' ? (
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 text-center text-[11px] text-slate-500 dark:text-slate-400">
-                Akun default Superadmin: <strong>superadmin</strong> / <strong>superadmin123</strong>
+                Gunakan kredensial Superadmin yang tersimpan di cache aplikasi.
               </div>
             ) : (
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 text-center text-[11px] text-slate-500 dark:text-slate-400">

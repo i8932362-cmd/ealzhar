@@ -25,6 +25,7 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
 import { TeacherAttendance, SchoolLocation, Teacher } from '../../types/index.ts';
 import { gasGet, gasPost, getWibTodayStr } from '../../lib/api.ts';
+import { formatWibTime24, getNextUpcomingSessionForType, sortSessions } from '../../lib/sessions.ts';
 import {
   loadFaceDetectionModels,
   areFaceModelsLoaded,
@@ -91,10 +92,23 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     locations,
     teachers,
     faceTemplates,
+    sessions,
+    activeTeacherSession,
+    wibNowHhMm,
     serverVersion,
     serverDate,
     notifyFaceDatabaseChanged,
   } = useSync();
+
+  const teacherSessions = useMemo(
+    () => sortSessions(sessions.filter((s) => s.targetType === 'teacher')),
+    [sessions]
+  );
+
+  const nextTeacherSession = useMemo(
+    () => (activeTeacherSession ? null : getNextUpcomingSessionForType(sessions, 'teacher', wibNowHhMm)),
+    [sessions, activeTeacherSession, wibNowHhMm]
+  );
 
   // Location state
   const [gpsLoading, setGpsLoading] = useState<boolean>(true);
@@ -114,14 +128,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   const [matchedTeacherInFrame, setMatchedTeacherInFrame] = useState<{ name: string; nip: string } | null>(null);
   const [hasFaceInFrame, setHasFaceInFrame] = useState<boolean>(false);
   const [earlyCheckoutAutoEnabled, setEarlyCheckoutAutoEnabled] = useState<boolean>(false);
-  const [nowWibHhMm, setNowWibHhMm] = useState<string>(() =>
-    new Date().toLocaleTimeString('en-GB', {
-      timeZone: 'Asia/Jakarta',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    })
-  );
+  const [liveClock24, setLiveClock24] = useState<string>(() => formatWibTime24(new Date(), true));
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -140,6 +147,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   const [teacherDisplayNip, setTeacherDisplayNip] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [recapMode, setRecapMode] = useState<'daily' | 'weekly' | 'monthly' | 'range' | 'all'>('daily');
+  const [sessionFilter, setSessionFilter] = useState<string>('ALL');
   const [rangeStartDate, setRangeStartDate] = useState<string>(() => shiftUtcDate(todayStr, -6));
   const [rangeEndDate, setRangeEndDate] = useState<string>(todayStr);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -175,6 +183,13 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   const [showPermitModal, setShowPermitModal] = useState<boolean>(false);
   const [permitType, setPermitType] = useState<'Izin' | 'Sakit'>('Izin');
   const [permitNotes, setPermitNotes] = useState<string>('');
+  const [permitSessionId, setPermitSessionId] = useState<string>('');
+
+  useEffect(() => {
+    if (showPermitModal) {
+      setPermitSessionId(activeTeacherSession?.id || teacherSessions[0]?.id || '');
+    }
+  }, [showPermitModal, activeTeacherSession?.id, teacherSessions]);
 
   const loadTeacherHistory = useCallback(async () => {
     if (!user) return;
@@ -260,35 +275,43 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     }
   }, [currentCoords, locations]);
 
-  // Keep WIB HH:mm clock updated for session determination
+  // Keep strict 24-hour WIB clock updated every 1s
   useEffect(() => {
-    const updateHhMm = () => {
-      setNowWibHhMm(
-        new Date().toLocaleTimeString('en-GB', {
-          timeZone: 'Asia/Jakarta',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        })
-      );
-    };
-    const timer = setInterval(updateHhMm, 10000);
-    return () => clearInterval(timer);
+    const timer = window.setInterval(() => {
+      setLiveClock24(formatWibTime24(new Date(), true));
+    }, 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const todayRecord = useMemo(() => history.find((h) => h.date === todayStr), [history, todayStr]);
-  const checkOutTime = settings?.checkOutTime || '15:00';
+  // Reset per-session automation state when active teacher session switches automatically
+  useEffect(() => {
+    autoTriggeredSessionRef.current = null;
+    consecutiveMatchRef.current = { personId: '', count: 0 };
+    setEarlyCheckoutAutoEnabled(false);
+  }, [activeTeacherSession?.id]);
 
-  const activeAutoSession: 'checkIn' | 'checkOut' | 'waitingCheckOut' | 'completed' = useMemo(() => {
-    if (!todayRecord) return 'checkIn';
-    if (todayRecord.status === 'Izin' || todayRecord.status === 'Sakit' || todayRecord.timeOut) {
-      return 'completed';
-    }
-    if (todayRecord.timeIn) {
-      return nowWibHhMm >= checkOutTime || earlyCheckoutAutoEnabled ? 'checkOut' : 'waitingCheckOut';
-    }
-    return 'checkIn';
-  }, [todayRecord, nowWibHhMm, checkOutTime, earlyCheckoutAutoEnabled]);
+  // Strict per-session isolation: todayRecord only matches the currently active teacher session!
+  const todayRecord = useMemo(() => {
+    if (!activeTeacherSession) return undefined;
+    return history.find(
+      (h) => h.date === todayStr && String(h.sessionId || '') === String(activeTeacherSession.id)
+    );
+  }, [history, todayStr, activeTeacherSession]);
+
+  const checkOutTime = activeTeacherSession?.endTime || settings?.checkOutTime || '15:00';
+
+  const activeAutoSession: 'outsideSession' | 'checkIn' | 'checkOut' | 'waitingCheckOut' | 'completed' =
+    useMemo(() => {
+      if (!activeTeacherSession) return 'outsideSession';
+      if (!todayRecord) return 'checkIn';
+      if (todayRecord.status === 'Izin' || todayRecord.status === 'Sakit' || todayRecord.timeOut) {
+        return 'completed';
+      }
+      if (todayRecord.timeIn) {
+        return wibNowHhMm >= checkOutTime || earlyCheckoutAutoEnabled ? 'checkOut' : 'waitingCheckOut';
+      }
+      return 'checkIn';
+    }, [activeTeacherSession, todayRecord, wibNowHhMm, checkOutTime, earlyCheckoutAutoEnabled]);
 
   const activeLocationsCount = useMemo(() => locations.filter((l) => l.isActive).length, [locations]);
   const isInsideRadius = nearestLocation
@@ -302,6 +325,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     teacherFaceTemplates,
     teachers,
     user,
+    activeTeacherSession,
     activeAutoSession,
     isInsideRadius,
     activeLocationsCount,
@@ -314,6 +338,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     teacherFaceTemplates,
     teachers,
     user,
+    activeTeacherSession,
     activeAutoSession,
     isInsideRadius,
     activeLocationsCount,
@@ -359,6 +384,17 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       setFeedback(null);
 
       try {
+        if (!activeTeacherSession) {
+          playErrorBeep();
+          setFeedback({
+            type: 'error',
+            message: nextTeacherSession
+              ? `Di luar jam sesi guru (${wibNowHhMm} WIB). Sesi berikutnya "${nextTeacherSession.name}" otomatis dibuka pukul ${nextTeacherSession.startTime}–${nextTeacherSession.endTime} WIB.`
+              : `Di luar jam sesi presensi guru (${wibNowHhMm} WIB). Belum ada sesi guru aktif saat ini.`,
+          });
+          return;
+        }
+
         // 1. Verify GPS radius
         if (nearestLocation && nearestLocation.distanceMeters > nearestLocation.location.radiusMeters) {
           playErrorBeep();
@@ -422,9 +458,10 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
         const resolvedTeacher = options?.matchedTeacher || myTeacher;
 
-        // 3. Submit attendance (nama & nip only, ZERO photoBase64)
+        // 3. Submit attendance (nama & nip only, ZERO photoBase64, strict per-session isolation)
         const res = await gasPost<{ attendance: TeacherAttendance }>('teacherAttendance', {
           actionType,
+          sessionId: activeTeacherSession.id,
           teacherId: resolvedTeacher?.id || user?.id,
           teacherName: resolvedTeacher?.name || user?.name,
           teacherNip: resolvedTeacher?.nip || user?.nip || teacherDisplayNip || '',
@@ -440,8 +477,8 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
           playSuccessChime();
           speakIndonesian(
             actionType === 'checkIn'
-              ? `Presensi masuk berhasil untuk ${resolvedTeacher?.name || user?.name || 'guru'}`
-              : `Presensi pulang berhasil untuk ${resolvedTeacher?.name || user?.name || 'guru'}`
+              ? `Presensi masuk sesi ${activeTeacherSession.name} berhasil untuk ${resolvedTeacher?.name || user?.name || 'guru'}`
+              : `Presensi pulang sesi ${activeTeacherSession.name} berhasil untuk ${resolvedTeacher?.name || user?.name || 'guru'}`
           );
           confetti({ particleCount: 70, spread: 60 });
           setFeedback({ type: 'success', message: res.message || 'Presensi berhasil dicatat.' });
@@ -461,6 +498,9 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       }
     },
     [
+      activeTeacherSession,
+      nextTeacherSession,
+      wibNowHhMm,
       nearestLocation,
       myFaceTemplate,
       teacherFaceTemplates,
@@ -582,13 +622,14 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                     const session = snap.activeAutoSession;
                     const gpsOk = snap.activeLocationsCount === 0 || (!snap.gpsLoading && snap.isInsideRadius);
                     if (
+                      snap.activeTeacherSession &&
                       consecutiveMatchRef.current.count >= 2 &&
                       (session === 'checkIn' || session === 'checkOut') &&
                       gpsOk &&
                       !isSubmittingRef.current &&
-                      autoTriggeredSessionRef.current !== session
+                      autoTriggeredSessionRef.current !== `${snap.activeTeacherSession.id}:${session}`
                     ) {
-                      autoTriggeredSessionRef.current = session;
+                      autoTriggeredSessionRef.current = `${snap.activeTeacherSession.id}:${session}`;
                       void submitAttendanceRef.current(session, {
                         skipSingleFrameVerify: true,
                         matchedTeacher: matchedObj,
@@ -703,6 +744,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     try {
       const res = await gasPost('teacherAttendance', {
         actionType: 'permit',
+        sessionId: permitSessionId || activeTeacherSession?.id || undefined,
         teacherId: myTeacher?.id || user?.id,
         teacherName: myTeacher?.name || user?.name,
         teacherNip: myTeacher?.nip || user?.nip || teacherDisplayNip || '',
@@ -733,26 +775,46 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     }
   };
 
+  const sessionFilteredHistory = useMemo(() => {
+    if (sessionFilter === 'ALL') return history;
+    return history.filter((h) => String(h.sessionId || '') === sessionFilter);
+  }, [history, sessionFilter]);
+
   const prevDateStr = shiftUtcDate(selectedDate, -1);
   const nextDateStr = shiftUtcDate(selectedDate, 1);
-  const prevDateRecord = history.find((h) => h.date === prevDateStr);
-  const selectedDateRecord = history.find((h) => h.date === selectedDate);
-  const nextDateRecord = history.find((h) => h.date === nextDateStr);
+  const prevDateRecord = sessionFilteredHistory.find((h) => h.date === prevDateStr);
+  const selectedDateRecords = useMemo(
+    () => sessionFilteredHistory.filter((h) => h.date === selectedDate),
+    [sessionFilteredHistory, selectedDate]
+  );
+  const selectedDateRecord = selectedDateRecords[0];
+  const nextDateRecord = sessionFilteredHistory.find((h) => h.date === nextDateStr);
 
   const weekBounds = getWeekBounds(selectedDate);
   const selectedMonthPrefix = selectedDate.slice(0, 7);
 
   const recapRecords = useMemo(() => {
-    if (recapMode === 'daily') return history.filter((h) => h.date === selectedDate);
-    if (recapMode === 'weekly') return history.filter((h) => h.date >= weekBounds.start && h.date <= weekBounds.end);
-    if (recapMode === 'monthly') return history.filter((h) => h.date.startsWith(selectedMonthPrefix));
+    if (recapMode === 'daily') return sessionFilteredHistory.filter((h) => h.date === selectedDate);
+    if (recapMode === 'weekly')
+      return sessionFilteredHistory.filter((h) => h.date >= weekBounds.start && h.date <= weekBounds.end);
+    if (recapMode === 'monthly')
+      return sessionFilteredHistory.filter((h) => h.date.startsWith(selectedMonthPrefix));
     if (recapMode === 'range') {
       const start = rangeStartDate <= rangeEndDate ? rangeStartDate : rangeEndDate;
       const end = rangeStartDate <= rangeEndDate ? rangeEndDate : rangeStartDate;
-      return history.filter((h) => h.date >= start && h.date <= end);
+      return sessionFilteredHistory.filter((h) => h.date >= start && h.date <= end);
     }
-    return history;
-  }, [history, recapMode, selectedDate, weekBounds.start, weekBounds.end, selectedMonthPrefix, rangeStartDate, rangeEndDate]);
+    return sessionFilteredHistory;
+  }, [
+    sessionFilteredHistory,
+    recapMode,
+    selectedDate,
+    weekBounds.start,
+    weekBounds.end,
+    selectedMonthPrefix,
+    rangeStartDate,
+    rangeEndDate,
+  ]);
 
   const recapStats = useMemo(() => {
     const tepatWaktu = recapRecords.filter((r) => r.status === 'Tepat Waktu').length;
@@ -777,6 +839,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     const rows = recapRecords.map((r, idx) => ({
       No: idx + 1,
       Tanggal: r.date,
+      Sesi: r.sessionName || '-',
       Nama_Guru: (r as any).teacherName || teacherDisplayName || user?.name || 'Guru',
       NIP: r.nip || teacherDisplayNip || '-',
       Jam_Masuk: r.timeIn || '-',
@@ -834,13 +897,19 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
           </div>
         </div>
 
-        <button
-          onClick={() => setShowPermitModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition"
-        >
-          <FileText className="w-4 h-4" />
-          <span>Ajukan Izin / Sakit</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-xs font-black text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-indigo-500" />
+            <span>{liveClock24} WIB</span>
+          </div>
+          <button
+            onClick={() => setShowPermitModal(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Ajukan Izin / Sakit</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -903,20 +972,30 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
           {/* Camera Card (Instant Open + Auto-Presensi Sesuai Sesi saat Wajah Cocok) */}
           <div className="relative rounded-3xl overflow-hidden bg-slate-900 border border-slate-800 shadow-xl min-h-[340px] flex flex-col items-center justify-center p-4 sm:p-5 text-center space-y-3">
-            {/* Session Indicator */}
+            {/* Session Indicator (Automatic 24h Switch & Strict Per-Session Sheet Isolation) */}
             <div className="w-full flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 text-slate-100 font-bold border border-slate-700">
-                <Clock className="w-3.5 h-3.5 text-indigo-400" />
+              <div className="inline-flex flex-wrap items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 text-slate-100 font-bold border border-slate-700 text-left">
+                <Clock className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
                 <span>
-                  {activeAutoSession === 'checkIn'
-                    ? 'Sesi Aktif: Presensi Masuk (Otomatis)'
-                    : activeAutoSession === 'checkOut'
-                    ? 'Sesi Aktif: Presensi Pulang (Otomatis)'
-                    : activeAutoSession === 'waitingCheckOut'
-                    ? `Sudah Masuk (${todayRecord?.timeIn}) • Auto-Pulang Mulai ${checkOutTime} WIB`
-                    : 'Presensi Hari Ini Selesai'}
+                  {!activeTeacherSession
+                    ? nextTeacherSession
+                      ? `Di Luar Jam Sesi • Berikutnya: ${nextTeacherSession.name} (${nextTeacherSession.startTime}–${nextTeacherSession.endTime} WIB)`
+                      : `Di Luar Jadwal Sesi Guru (${wibNowHhMm} WIB)`
+                    : activeAutoSession === 'checkIn'
+                      ? `Sesi ${activeTeacherSession.name} (${activeTeacherSession.startTime}–${activeTeacherSession.endTime} WIB • Batas ${activeTeacherSession.lateCutoffTime} WIB) • Auto Masuk`
+                      : activeAutoSession === 'checkOut'
+                        ? `Sesi ${activeTeacherSession.name}: Auto Pulang Aktif`
+                        : activeAutoSession === 'waitingCheckOut'
+                          ? `${activeTeacherSession.name}: Sudah Masuk (${todayRecord?.timeIn} WIB) • Pulang ${checkOutTime} WIB`
+                          : `Sesi ${activeTeacherSession.name}: Presensi Selesai`}
                 </span>
               </div>
+
+              {activeTeacherSession && (
+                <span className="px-2.5 py-1 rounded-lg bg-slate-800/90 text-emerald-300 border border-slate-700 font-mono text-[10px] font-bold">
+                  Sheet: {activeTeacherSession.sheetName}
+                </span>
+              )}
 
               {activeAutoSession === 'waitingCheckOut' && (
                 <button
@@ -1071,23 +1150,31 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
           <div className="grid grid-cols-2 gap-4">
             <button
               onClick={() => void handleAttendanceSubmit('checkIn')}
-              disabled={isSubmitting || Boolean(todayRecord && todayRecord.timeIn)}
+              disabled={!activeTeacherSession || isSubmitting || Boolean(todayRecord && todayRecord.timeIn)}
               className="py-4 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-lg shadow-emerald-600/20 disabled:opacity-50 transition text-center"
             >
               <div className="text-base">Presensi Masuk</div>
               <div className="text-[11px] font-normal opacity-80 mt-0.5">
-                {todayRecord?.timeIn ? `Sudah Masuk (${todayRecord.timeIn})` : 'Verifikasi Wajah & Masuk'}
+                {!activeTeacherSession
+                  ? 'Di luar jam sesi guru'
+                  : todayRecord?.timeIn
+                    ? `Sudah Masuk (${todayRecord.timeIn} WIB)`
+                    : `Sesi ${activeTeacherSession.name}`}
               </div>
             </button>
 
             <button
               onClick={() => void handleAttendanceSubmit('checkOut')}
-              disabled={isSubmitting || !todayRecord || Boolean(todayRecord?.timeOut)}
+              disabled={!activeTeacherSession || isSubmitting || !todayRecord || Boolean(todayRecord?.timeOut)}
               className="py-4 px-6 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-lg shadow-blue-600/20 disabled:opacity-50 transition text-center"
             >
               <div className="text-base">Presensi Pulang</div>
               <div className="text-[11px] font-normal opacity-80 mt-0.5">
-                {todayRecord?.timeOut ? `Sudah Pulang (${todayRecord.timeOut})` : 'Klik saat jam pulang'}
+                {!activeTeacherSession
+                  ? 'Di luar jam sesi guru'
+                  : todayRecord?.timeOut
+                    ? `Sudah Pulang (${todayRecord.timeOut} WIB)`
+                    : 'Klik saat jam pulang'}
               </div>
             </button>
           </div>
@@ -1095,7 +1182,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
         {/* Right Column: Recap & History */}
         <div className="lg:col-span-5 p-5 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <History className="w-4 h-4 text-indigo-500" />
               <div>
@@ -1103,14 +1190,30 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                 {teacherDisplayName && <p className="text-[11px] text-slate-400">Guru: {teacherDisplayName}</p>}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleExportPersonalRecap}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Ekspor</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              {teacherSessions.length > 0 && (
+                <select
+                  value={sessionFilter}
+                  onChange={(e) => setSessionFilter(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
+                >
+                  <option value="ALL">Semua Sesi</option>
+                  {teacherSessions.map((ses) => (
+                    <option key={ses.id} value={ses.id}>
+                      {ses.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                type="button"
+                onClick={handleExportPersonalRecap}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Ekspor</span>
+              </button>
+            </div>
           </div>
 
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700 space-y-2.5">
@@ -1200,37 +1303,50 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
               ))}
             </div>
 
-            <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] space-y-1">
+            <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-slate-800 dark:text-slate-100">
                   Detail {formatIndoShort(selectedDate)}
                 </span>
-                <span
-                  className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
-                    selectedDateRecord
-                      ? selectedDateRecord.status === 'Tepat Waktu'
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                        : selectedDateRecord.status === 'Terlambat'
-                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
-                        : 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
-                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-                  }`}
-                >
-                  {selectedDateRecord ? selectedDateRecord.status : 'Tidak Ada Catatan'}
+                <span className="text-[10px] font-semibold text-slate-400">
+                  {selectedDateRecords.length} Sesi Tercatat
                 </span>
               </div>
-              {selectedDateRecord ? (
-                <>
-                  <div className="flex items-center justify-between text-slate-500">
-                    <span>
-                      Masuk: <strong className="font-mono text-slate-800 dark:text-slate-200">{selectedDateRecord.timeIn || '-'}</strong>
-                    </span>
-                    <span>
-                      Pulang: <strong className="font-mono text-slate-800 dark:text-slate-200">{selectedDateRecord.timeOut || '-'}</strong>
-                    </span>
-                  </div>
-                  {selectedDateRecord.notes && <div className="text-slate-400 italic">Catatan: {selectedDateRecord.notes}</div>}
-                </>
+              {selectedDateRecords.length > 0 ? (
+                <div className="space-y-1.5">
+                  {selectedDateRecords.map((rec) => (
+                    <div
+                      key={rec.id}
+                      className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-indigo-600 dark:text-indigo-400">
+                          {rec.sessionName || 'Sesi Guru'}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                            rec.status === 'Tepat Waktu'
+                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                              : rec.status === 'Terlambat'
+                                ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                                : 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
+                          }`}
+                        >
+                          {rec.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-500">
+                        <span>
+                          Masuk: <strong className="font-mono text-slate-800 dark:text-slate-200">{rec.timeIn || '-'}</strong>
+                        </span>
+                        <span>
+                          Pulang: <strong className="font-mono text-slate-800 dark:text-slate-200">{rec.timeOut || '-'}</strong>
+                        </span>
+                      </div>
+                      {rec.notes && <div className="text-slate-400 italic">Catatan: {rec.notes}</div>}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="text-slate-400">Belum ada catatan masuk/izin pada tanggal ini.</div>
               )}
@@ -1361,8 +1477,15 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                       : 'bg-slate-50 dark:bg-slate-800/60 border-slate-100 dark:border-slate-800 hover:border-slate-300'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900 dark:text-white">{formatIndoShort(item.date)}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-bold text-slate-900 dark:text-white">{formatIndoShort(item.date)}</span>
+                      {item.sessionName && (
+                        <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold">
+                          {item.sessionName}
+                        </span>
+                      )}
+                    </div>
                     <span
                       className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
                         item.status === 'Tepat Waktu'
@@ -1392,14 +1515,32 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       </div>
 
       {showPermitModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 dark:text-white">Pengajuan Izin / Sakit Guru</h3>
             <p className="text-xs text-slate-500 mb-4">
-              Pengajuan akan langsung tercatat ke Google Sheets dengan nama & NIP Anda.
+              Pengajuan akan langsung tercatat ke Sheet sesi guru yang dipilih dengan nama & NIP Anda.
             </p>
 
             <form onSubmit={handleSavePermit} className="space-y-4">
+              {teacherSessions.length > 0 && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Pilih Sesi Guru (24 Jam WIB)
+                  </label>
+                  <select
+                    value={permitSessionId}
+                    onChange={(e) => setPermitSessionId(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  >
+                    {teacherSessions.map((ses) => (
+                      <option key={ses.id} value={ses.id}>
+                        {ses.name} ({ses.startTime}–{ses.endTime} WIB)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Jenis Pengajuan

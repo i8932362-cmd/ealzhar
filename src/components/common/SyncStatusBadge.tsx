@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSync } from '../../context/SyncContext.tsx';
 import { getRealtimeClientId } from '../../lib/api.ts';
+import { formatWibTime24 } from '../../lib/sessions.ts';
 import { Wifi, WifiOff, Users, Radio, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
 const TAB_LABELS: Record<string, string> = {
@@ -138,7 +139,7 @@ export const SyncStatusBadge: React.FC = () => {
             </div>
             <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
               Sinkronisasi dua arah berjalan otomatis
-              {lastSyncedAt ? ` • ${lastSyncedAt.toLocaleTimeString('id-ID')}` : ''}
+              {lastSyncedAt ? ` • ${formatWibTime24(lastSyncedAt, true)} WIB` : ''}
             </div>
             {syncError && (
               <div className="mt-2 p-2 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-[10px] text-red-700 dark:text-red-300">

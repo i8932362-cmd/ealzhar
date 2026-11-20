@@ -7,6 +7,10 @@ import {
   setApiActorName,
 } from '../lib/api.ts';
 import { hydrateGasConfig, isGasConfigured, subscribeGasConfigChange } from '../lib/gasConfig.ts';
+import {
+  ensureSuperadminCacheSeeded,
+  verifyCachedSuperadminPassword,
+} from '../lib/superadminCache.ts';
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -21,6 +25,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const INACTIVITY_TIMEOUT_MS = 20 * 60 * 1000; // 20 menit batas diam
+const AUTH_PROFILE_CACHE_KEY = 'presensi_auth_user_profile_v1';
 
 const BOOTSTRAP_SUPERADMIN_USER: AuthUser = {
   id: 'usr-superadmin',
@@ -38,14 +43,53 @@ const BOOTSTRAP_ADMIN_USER: AuthUser = {
   email: 'admin@mambaululum.sch.id',
 };
 
+function readCachedUserProfile(expectedUserId: string | null): AuthUser | null {
+  if (typeof window === 'undefined' || !expectedUserId) return null;
+  if (expectedUserId === BOOTSTRAP_SUPERADMIN_USER.id) return BOOTSTRAP_SUPERADMIN_USER;
+  try {
+    const raw = sessionStorage.getItem(AUTH_PROFILE_CACHE_KEY) || localStorage.getItem(AUTH_PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AuthUser;
+    if (parsed && parsed.id === expectedUserId) return parsed;
+  } catch {
+    // Ignore
+  }
+  if (expectedUserId === BOOTSTRAP_ADMIN_USER.id) return BOOTSTRAP_ADMIN_USER;
+  return null;
+}
+
+function writeCachedUserProfile(profile: AuthUser | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!profile) {
+      sessionStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
+      localStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
+    } else {
+      const json = JSON.stringify(profile);
+      sessionStorage.setItem(AUTH_PROFILE_CACHE_KEY, json);
+      localStorage.setItem(AUTH_PROFILE_CACHE_KEY, json);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    const storedId = getStoredSessionUserId();
+    return readCachedUserProfile(storedId);
+  });
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [gasConfigured, setGasConfigured] = useState<boolean>(() => isGasConfigured());
   const idleTimerRef = useRef<number | null>(null);
 
+  useEffect(() => {
+    ensureSuperadminCacheSeeded();
+  }, []);
+
   const logout = useCallback(() => {
     setStoredSessionUserId(null);
+    writeCachedUserProfile(null);
     setApiActorName('system');
     setUser(null);
   }, []);
@@ -88,22 +132,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setGasConfigured(configured);
 
     const userId = getStoredSessionUserId();
-    if (!configured) {
-      if (userId === BOOTSTRAP_SUPERADMIN_USER.id) {
-        setUser(BOOTSTRAP_SUPERADMIN_USER);
-        setApiActorName(BOOTSTRAP_SUPERADMIN_USER.username);
-      } else if (userId === BOOTSTRAP_ADMIN_USER.id) {
-        setUser(BOOTSTRAP_ADMIN_USER);
-        setApiActorName(BOOTSTRAP_ADMIN_USER.username);
-      } else {
-        setUser(null);
-      }
+    if (!userId) {
+      writeCachedUserProfile(null);
+      setUser(null);
       setIsLoading(false);
       return;
     }
 
-    if (!userId) {
-      setUser(null);
+    if (userId === BOOTSTRAP_SUPERADMIN_USER.id) {
+      setUser(BOOTSTRAP_SUPERADMIN_USER);
+      writeCachedUserProfile(BOOTSTRAP_SUPERADMIN_USER);
+      setApiActorName(BOOTSTRAP_SUPERADMIN_USER.username);
+      setIsLoading(false);
+      return;
+    }
+
+    if (!configured) {
+      if (userId === BOOTSTRAP_ADMIN_USER.id) {
+        setUser(BOOTSTRAP_ADMIN_USER);
+        writeCachedUserProfile(BOOTSTRAP_ADMIN_USER);
+        setApiActorName(BOOTSTRAP_ADMIN_USER.username);
+      } else {
+        setUser(null);
+      }
       setIsLoading(false);
       return;
     }
@@ -115,11 +166,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         { trackSaveStatus: false, silent: true }
       );
       if (res.success && res.user) {
-        setUser(res.user as AuthUser);
-        setApiActorName((res.user as AuthUser).username || (res.user as AuthUser).name);
-      } else if (userId === BOOTSTRAP_SUPERADMIN_USER.id) {
-        setUser(BOOTSTRAP_SUPERADMIN_USER);
-        setApiActorName(BOOTSTRAP_SUPERADMIN_USER.username);
+        const verifiedUser = res.user as AuthUser;
+        setUser(verifiedUser);
+        writeCachedUserProfile(verifiedUser);
+        setApiActorName(verifiedUser.username || verifiedUser.name);
       } else {
         const errText = String(res.error || '').toLowerCase();
         if (errText.includes('tidak ditemukan') || errText.includes('nonaktif')) {
@@ -129,10 +179,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err: any) {
       const msg = String(err?.message || '').toLowerCase();
       const isUserInvalid = msg.includes('tidak ditemukan') || msg.includes('nonaktif');
-      if (userId === BOOTSTRAP_SUPERADMIN_USER.id) {
-        // Keep bootstrap superadmin logged in so Superadmin can inspect/fix URL & Token anytime
-        setUser((prev) => prev || BOOTSTRAP_SUPERADMIN_USER);
-      } else if (isUserInvalid) {
+      if (isUserInvalid) {
         logout();
       } else if (userId === BOOTSTRAP_ADMIN_USER.id) {
         setUser((prev) => prev || BOOTSTRAP_ADMIN_USER);
@@ -163,15 +210,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<{ success: boolean; error?: string; user?: AuthUser }> => {
     const cleanUser = username.trim();
 
-    if (!isGasConfigured()) {
-      if (cleanUser.toLowerCase() === 'superadmin' && password === 'superadmin123') {
+    // Superadmin login selalu diverifikasi dari cache lokal aplikasi, terisolasi dari Admin & Google Sheets Users
+    if (cleanUser.toLowerCase() === 'superadmin') {
+      if (verifyCachedSuperadminPassword(password)) {
         setStoredSessionUserId(BOOTSTRAP_SUPERADMIN_USER.id);
+        writeCachedUserProfile(BOOTSTRAP_SUPERADMIN_USER);
         setApiActorName(BOOTSTRAP_SUPERADMIN_USER.username);
         setUser(BOOTSTRAP_SUPERADMIN_USER);
         return { success: true, user: BOOTSTRAP_SUPERADMIN_USER };
       }
+      return {
+        success: false,
+        error: 'Username atau sandi Superadmin salah.',
+      };
+    }
+
+    if (!isGasConfigured()) {
       if (cleanUser.toLowerCase() === 'admin' && password === 'admin123') {
         setStoredSessionUserId(BOOTSTRAP_ADMIN_USER.id);
+        writeCachedUserProfile(BOOTSTRAP_ADMIN_USER);
         setApiActorName(BOOTSTRAP_ADMIN_USER.username);
         setUser(BOOTSTRAP_ADMIN_USER);
         return { success: true, user: BOOTSTRAP_ADMIN_USER };
@@ -192,19 +249,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.success && res.user) {
         const loggedUser = res.user as AuthUser;
         setStoredSessionUserId(loggedUser.id);
+        writeCachedUserProfile(loggedUser);
         setApiActorName(loggedUser.username || loggedUser.name);
         setUser(loggedUser);
         return { success: true, user: loggedUser };
       }
       return { success: false, error: res.error || 'Username atau password salah.' };
     } catch (err: any) {
-      // Allow emergency Superadmin fallback if sheet hasn't been upgraded with usr-superadmin or URL/Token is broken
-      if (cleanUser.toLowerCase() === 'superadmin' && password === 'superadmin123') {
-        setStoredSessionUserId(BOOTSTRAP_SUPERADMIN_USER.id);
-        setApiActorName(BOOTSTRAP_SUPERADMIN_USER.username);
-        setUser(BOOTSTRAP_SUPERADMIN_USER);
-        return { success: true, user: BOOTSTRAP_SUPERADMIN_USER };
-      }
       return { success: false, error: err?.message || 'Gagal terhubung ke Google Apps Script.' };
     }
   };

@@ -40,18 +40,22 @@ export default async function handler(
 
   if (req.method === 'POST') {
     let body = req.body;
-    if (!body || typeof body === 'string') {
+    if (!body || typeof body === 'string' || Buffer.isBuffer(body)) {
       try {
         const raw = typeof body === 'string'
           ? body
-          : await new Promise<string>((resolve) => {
-              let data = '';
-              req.on('data', (chunk) => {
-                data += chunk;
+          : Buffer.isBuffer(body)
+            ? body.toString('utf8')
+            : await new Promise<string>((resolve) => {
+                const chunks: Buffer[] = [];
+                req.on('data', (chunk) => {
+                  chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+                });
+                req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+                req.on('error', () => resolve('{}'));
               });
-              req.on('end', () => resolve(data));
-            });
-        body = JSON.parse(raw || '{}');
+        const parsed = JSON.parse(raw || '{}');
+        body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
       } catch {
         body = {};
       }

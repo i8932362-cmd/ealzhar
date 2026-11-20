@@ -119,6 +119,32 @@ export function setApiActorName(actor: string) {
   currentActorName = actor || 'system';
 }
 
+async function parseGasJsonResponse<T = any>(res: Response): Promise<ApiResponse<T>> {
+  const rawText = await res.text().catch(() => '');
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return { success: false, error: `Respon kosong dari Google Apps Script (HTTP ${res.status}).` };
+  }
+  if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html') || trimmed.startsWith('<')) {
+    const needsAuth = /accounts\.google\.com|ServiceLogin|Authorization/i.test(trimmed);
+    return {
+      success: false,
+      error: needsAuth
+        ? 'Google Apps Script meminta otorisasi. Pastikan Deploy Web App diatur: "Execute as: Me" & "Who has access: Anyone".'
+        : `Google Apps Script mengembalikan halaman HTML error (HTTP ${res.status}). Pastikan Anda sudah Deploy Versi Baru pada Code.gs.`,
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') {
+      return { success: false, error: 'Format JSON Google Apps Script tidak valid.' };
+    }
+    return parsed as ApiResponse<T>;
+  } catch {
+    return { success: false, error: 'Respon Google Apps Script bukan JSON valid.' };
+  }
+}
+
 export async function gasGet<T = any>(
   action: string,
   params: Record<string, string | number | undefined> = {}
@@ -141,7 +167,7 @@ export async function gasGet<T = any>(
     method: 'GET',
     redirect: 'follow',
   });
-  const data = await res.json().catch(() => ({ success: false, error: 'Respon Google Apps Script bukan JSON valid.' }));
+  const data = await parseGasJsonResponse<T>(res);
   if (!res.ok || data.success === false) {
     throw new Error(data.error || `Gagal memuat data (${res.status}).`);
   }
@@ -179,17 +205,14 @@ async function executeGasPostOnce<T = any>(
       'Content-Type': 'text/plain;charset=utf-8',
     },
     body: JSON.stringify({
+      ...payload,
       token,
       action,
       actor: payload.actor || currentActorName,
-      ...payload,
     }),
   });
 
-  const data = (await res.json().catch(() => ({
-    success: false,
-    error: 'Respon Google Apps Script bukan JSON valid.',
-  }))) as ApiResponse<T>;
+  const data = await parseGasJsonResponse<T>(res);
 
   if (!res.ok || data.success === false) {
     const msg = data.error || `HTTP ${res.status}`;
@@ -260,6 +283,7 @@ export interface QueuedStudentScan {
   studentId: string;
   barcodeCard: string;
   method: string;
+  sessionId?: string;
   notes?: string;
 }
 
@@ -477,9 +501,18 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
       } else {
         failed++;
       }
-    } catch (e) {
-      console.warn('Failed to replay offline item:', item.id, e);
-      failed++;
+    } catch (e: any) {
+      if (
+        e?.response &&
+        e.response.success === false &&
+        !e.response.unauthorized &&
+        !isLockContentionMessage(e?.message || '')
+      ) {
+        await removeOfflineItem(item.id);
+      } else {
+        console.warn('Failed to replay offline item:', item.id, e);
+        failed++;
+      }
     }
   }
 

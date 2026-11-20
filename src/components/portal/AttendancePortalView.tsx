@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
+import { formatWibTime24 } from '../../lib/sessions.ts';
 
 interface AttendancePortalViewProps {
   onSelectStudentKiosk: () => void;
@@ -32,18 +33,16 @@ export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
   onOpenTeacherLogin,
 }) => {
   const { user, isAuthenticated } = useAuth();
-  const { settings, todayAttendance, activePermits } = useSync();
+  const { settings, todayAttendance, activePermits, activeStudentSession, activeTeacherSession } = useSync();
 
-  // Clock state
+  // Clock state (strict 24-hour WIB, no AM/PM)
   const [currentTime, setCurrentTime] = useState<string>('');
   const [currentDate, setCurrentDate] = useState<string>('');
 
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
-      setCurrentTime(
-        now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      );
+      setCurrentTime(formatWibTime24(now, true));
       setCurrentDate(
         now.toLocaleDateString('id-ID', {
           weekday: 'long',
@@ -101,10 +100,25 @@ export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
               <span>{currentDate}</span>
             </div>
             <div className="text-3xl sm:text-4xl font-black font-mono tracking-tight text-white">
-              {currentTime || '--:--:--'}
+              {currentTime ? `${currentTime} WIB` : '--:--:--'}
             </div>
-            <div className="mt-2 text-[10px] text-blue-200">
-              Batas Hadir Tepat Waktu: <strong>{settings?.lateCutoffTime} WIB</strong>
+            <div className="mt-2 text-[10px] text-blue-200 space-y-0.5">
+              <div>
+                Sesi Siswa:{' '}
+                <strong>
+                  {activeStudentSession
+                    ? `${activeStudentSession.name} (Cutoff ${activeStudentSession.lateCutoffTime} WIB)`
+                    : `Di luar jadwal • Default ${settings?.lateCutoffTime || '07:15'} WIB`}
+                </strong>
+              </div>
+              <div>
+                Sesi Guru:{' '}
+                <strong>
+                  {activeTeacherSession
+                    ? `${activeTeacherSession.name} (${activeTeacherSession.startTime}–${activeTeacherSession.endTime} WIB)`
+                    : 'Di luar jadwal sesi guru'}
+                </strong>
+              </div>
             </div>
           </div>
         </div>

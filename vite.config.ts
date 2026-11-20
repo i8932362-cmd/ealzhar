@@ -56,6 +56,28 @@ export default defineConfig(() => {
         '@': path.resolve('.'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('@vladmandic/face-api') || id.includes('@tensorflow')) {
+              return 'face-ai';
+            }
+            if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
+              return 'react-vendor';
+            }
+            if (id.includes('/recharts/') || id.includes('/xlsx/') || id.includes('/d3-')) {
+              return 'charts-xlsx';
+            }
+            if (id.includes('/lucide-react/')) {
+              return 'icons';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       port: 3000,
       host: '0.0.0.0',

@@ -42,7 +42,7 @@ export function useHardwareBarcodeScanner(
         target &&
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
       ) {
-        if ((target as HTMLInputElement).type !== 'password' && target.id !== 'scanner-trap-input') {
+        if (target.id !== 'scanner-trap-input') {
           return;
         }
       }

@@ -86,11 +86,31 @@ export interface SchoolClass {
   updatedBy: string;
 }
 
+export type SessionTargetType = 'student' | 'teacher';
+
+export interface AttendanceSession {
+  id: string;
+  targetType: SessionTargetType;
+  name: string;
+  startTime: string; // HH:mm 24-jam WIB
+  lateCutoffTime: string; // HH:mm 24-jam WIB
+  endTime: string; // HH:mm 24-jam WIB
+  sheetName: string;
+  sortOrder: number;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  diubah_pada?: string;
+  updatedBy?: string;
+}
+
 export type StudentAttendanceStatus = 'Hadir' | 'Terlambat' | 'Izin' | 'Sakit' | 'Alpa';
 export type AttendanceMethod = 'FACE_SCAN' | 'MANUAL' | 'RFID_SCAN' | 'BARCODE_SCAN';
 
 export interface StudentAttendance {
   id: string;
+  sessionId?: string;
+  sessionName?: string;
   studentId: string;
   studentName?: string;
   studentNis?: string;
@@ -111,6 +131,8 @@ export type TeacherAttendanceStatus = 'Tepat Waktu' | 'Terlambat' | 'Izin' | 'Sa
 
 export interface TeacherAttendance {
   id: string;
+  sessionId?: string;
+  sessionName?: string;
   teacherId: string;
   teacherName?: string;
   nip?: string;
@@ -140,7 +162,8 @@ export interface ToiletPermit {
   timeOut: string;
   timeIn?: string;
   durationMinutes?: number;
-  toiletType?: 'BAB' | 'BAK';
+  toiletType?: 'BAB' | 'BAK' | 'LAINNYA';
+  reason?: string;
   durationLimitMinutes?: number;
   status: 'active' | 'returned';
   createdAt: string;
@@ -157,6 +180,7 @@ export interface FrequentToiletStudent {
   totalCount: number;
   babCount: number;
   bakCount: number;
+  otherCount?: number;
   exceededCount: number;
   lastDate?: string;
 }

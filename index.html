@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Presensi Siswa & Guru - Yayasan Mambaul Ulum</title>
     <meta name="description" content="Aplikasi presensi digital cerdas Yayasan Mambaul Ulum untuk siswa dan guru berbasis deteksi wajah, scan QR/kartu, sinkronisasi Google Sheets, mode kiosk, GPS presensi guru, dan rekap wali kelas/BK." />
     <meta property="og:title" content="Presensi Siswa & Guru - Yayasan Mambaul Ulum" />
@@ -16,6 +16,9 @@
     <meta name="apple-mobile-web-app-title" content="Presensi" />
     <link rel="apple-touch-icon" href="/pwa-192x192.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <script>
+      (function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark');}}catch(e){}})();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -11,6 +11,7 @@ import {
   AuditLog,
   FollowUpNote,
   FrequentToiletStudent,
+  AttendanceSession,
 } from '../types/index.ts';
 import {
   gasGet,
@@ -22,6 +23,7 @@ import {
 } from '../lib/api.ts';
 import { hydrateGasConfig, isGasConfigured, subscribeGasConfigChange } from '../lib/gasConfig.ts';
 import { getOfflineQueue } from '../lib/indexedDb.ts';
+import { getWibNowHhMm, resolveActiveSessionForType, sortSessions } from '../lib/sessions.ts';
 import { useAuth } from './AuthContext.tsx';
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline';
@@ -76,6 +78,10 @@ interface SyncContextType {
   users: ManagedUserRow[];
   auditLogs: AuditLog[];
   followUpNotes: FollowUpNote[];
+  sessions: AttendanceSession[];
+  activeStudentSession: AttendanceSession | null;
+  activeTeacherSession: AttendanceSession | null;
+  wibNowHhMm: string;
   offlineQueueCount: number;
   notifyFaceDatabaseChanged: () => Promise<void>;
   updateSettings: (newSettings: Partial<SchoolSettings>) => Promise<boolean>;
@@ -103,6 +109,41 @@ const defaultSettings: SchoolSettings = {
 
 const SYNC_CHANNEL_NAME = 'presensi_mambaul_ulum_gas_sync';
 const SYNC_STORAGE_KEY = 'presensi_gas_sync_signal';
+const SYNC_SNAPSHOT_CACHE_KEY = 'presensi_sync_snapshot_v1';
+
+interface SyncSnapshotCache {
+  settings?: SchoolSettings | null;
+  sessions?: AttendanceSession[];
+  classes?: SchoolClass[];
+  students?: Student[];
+  teachers?: Teacher[];
+  locations?: SchoolLocation[];
+  activePermits?: ToiletPermit[];
+  frequentToiletStudents?: FrequentToiletStudent[];
+  todayAttendance?: StudentAttendance[];
+  serverDate?: string;
+}
+
+function readSyncSnapshotCache(): SyncSnapshotCache {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(SYNC_SNAPSHOT_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSyncSnapshotCache(snapshot: SyncSnapshotCache): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SYNC_SNAPSHOT_CACHE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Ignore localStorage quota exceeded
+  }
+}
 
 function detectDeviceLabel(): string {
   if (typeof navigator === 'undefined') return 'Web Browser';
@@ -128,6 +169,11 @@ const SyncContext = createContext<SyncContextType | undefined>(undefined);
 
 export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
+  const initialSnapshotRef = useRef<SyncSnapshotCache | null>(null);
+  if (initialSnapshotRef.current === null) {
+    initialSnapshotRef.current = readSyncSnapshotCache();
+  }
+  const snap = initialSnapshotRef.current;
 
   const [gasConfigured, setGasConfigured] = useState<boolean>(() => isGasConfigured());
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced');
@@ -135,24 +181,42 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState<boolean>(false);
   const [serverVersion, setServerVersion] = useState<number>(0);
-  const [serverDate, setServerDate] = useState<string>('');
+  const [serverDate, setServerDate] = useState<string>(() => snap.serverDate || '');
   const [activeUsers, setActiveUsers] = useState<ActiveUserPresence[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [faceTemplatesSyncedAt, setFaceTemplatesSyncedAt] = useState<Date | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  const [todayAttendance, setTodayAttendance] = useState<StudentAttendance[]>([]);
-  const [activePermits, setActivePermits] = useState<ToiletPermit[]>([]);
-  const [frequentToiletStudents, setFrequentToiletStudents] = useState<FrequentToiletStudent[]>([]);
-  const [settings, setSettings] = useState<SchoolSettings | null>(defaultSettings);
+  const [todayAttendance, setTodayAttendance] = useState<StudentAttendance[]>(() =>
+    Array.isArray(snap.todayAttendance) ? snap.todayAttendance : []
+  );
+  const [activePermits, setActivePermits] = useState<ToiletPermit[]>(() =>
+    Array.isArray(snap.activePermits) ? snap.activePermits : []
+  );
+  const [frequentToiletStudents, setFrequentToiletStudents] = useState<FrequentToiletStudent[]>(() =>
+    Array.isArray(snap.frequentToiletStudents) ? snap.frequentToiletStudents : []
+  );
+  const [settings, setSettings] = useState<SchoolSettings | null>(() => snap.settings || defaultSettings);
   const [faceTemplates, setFaceTemplates] = useState<FaceTemplate[]>([]);
-  const [students, setStudents] = useState<Student[]>([]);
-  const [classes, setClasses] = useState<SchoolClass[]>([]);
-  const [teachers, setTeachers] = useState<Teacher[]>([]);
-  const [locations, setLocations] = useState<SchoolLocation[]>([]);
+  const [students, setStudents] = useState<Student[]>(() =>
+    Array.isArray(snap.students) ? snap.students : []
+  );
+  const [classes, setClasses] = useState<SchoolClass[]>(() =>
+    Array.isArray(snap.classes) ? snap.classes : []
+  );
+  const [teachers, setTeachers] = useState<Teacher[]>(() =>
+    Array.isArray(snap.teachers) ? snap.teachers : []
+  );
+  const [locations, setLocations] = useState<SchoolLocation[]>(() =>
+    Array.isArray(snap.locations) ? snap.locations : []
+  );
   const [users, setUsers] = useState<ManagedUserRow[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [followUpNotes, setFollowUpNotes] = useState<FollowUpNote[]>([]);
+  const [sessions, setSessions] = useState<AttendanceSession[]>(() =>
+    Array.isArray(snap.sessions) ? sortSessions(snap.sessions) : []
+  );
+  const [wibNowHhMm, setWibNowHhMm] = useState<string>(() => getWibNowHhMm());
   const [offlineQueueCount, setOfflineQueueCount] = useState<number>(0);
 
   const serverVersionRef = useRef<number>(0);
@@ -163,6 +227,26 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const activeTabRef = useRef<string>('portal');
   const userRef = useRef(user);
   userRef.current = user;
+
+  // Keep 24-hour WIB HH:mm clock ticking every 5 seconds for automatic session switching
+  useEffect(() => {
+    const tick = () => {
+      const next = getWibNowHhMm();
+      setWibNowHhMm((prev) => (prev === next ? prev : next));
+    };
+    const id = window.setInterval(tick, 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const activeStudentSession = React.useMemo(
+    () => resolveActiveSessionForType(sessions, 'student', wibNowHhMm),
+    [sessions, wibNowHhMm]
+  );
+
+  const activeTeacherSession = React.useMemo(
+    () => resolveActiveSessionForType(sessions, 'teacher', wibNowHhMm),
+    [sessions, wibNowHhMm]
+  );
 
   // Subscribe to global GAS save status ('idle' | 'saving' | 'saved' | 'error')
   useEffect(() => {
@@ -242,6 +326,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
           users?: ManagedUserRow[];
           auditLogs?: AuditLog[];
           followUpNotes?: FollowUpNote[];
+          sessions?: AttendanceSession[];
+          serverHhmm?: string;
         }>('sync', {
           sinceVersion: forceRefresh ? 0 : serverVersionRef.current,
           force: forceRefresh ? '1' : undefined,
@@ -268,7 +354,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           if (res.hasChanges !== false) {
+            const sortedSessions = Array.isArray(res.sessions) ? sortSessions(res.sessions) : undefined;
             if (res.settings) setSettings(res.settings);
+            if (sortedSessions) setSessions(sortedSessions);
             if (Array.isArray(res.faceTemplates)) {
               setFaceTemplates(normalizeDescriptors(res.faceTemplates));
               setFaceTemplatesSyncedAt(new Date());
@@ -283,6 +371,22 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (Array.isArray(res.users)) setUsers(res.users);
             if (Array.isArray(res.auditLogs)) setAuditLogs(res.auditLogs);
             if (Array.isArray(res.followUpNotes)) setFollowUpNotes(res.followUpNotes);
+
+            const prevSnap = readSyncSnapshotCache();
+            writeSyncSnapshotCache({
+              settings: res.settings ?? prevSnap.settings,
+              sessions: sortedSessions ?? prevSnap.sessions,
+              classes: Array.isArray(res.classes) ? res.classes : prevSnap.classes,
+              students: Array.isArray(res.students) ? res.students : prevSnap.students,
+              teachers: Array.isArray(res.teachers) ? res.teachers : prevSnap.teachers,
+              locations: Array.isArray(res.locations) ? res.locations : prevSnap.locations,
+              activePermits: Array.isArray(res.activePermits) ? res.activePermits : prevSnap.activePermits,
+              frequentToiletStudents: Array.isArray(res.frequentToiletStudents)
+                ? res.frequentToiletStudents
+                : prevSnap.frequentToiletStudents,
+              todayAttendance: Array.isArray(res.todayAttendance) ? res.todayAttendance : prevSnap.todayAttendance,
+              serverDate: res.serverDate ? String(res.serverDate) : prevSnap.serverDate,
+            });
           }
 
           setLastSyncedAt(new Date());
@@ -450,6 +554,15 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [performSync]);
 
+  const prevSessionKeyRef = useRef<string>('');
+  useEffect(() => {
+    const nextKey = `${activeStudentSession?.id || ''}|${activeTeacherSession?.id || ''}`;
+    if (prevSessionKeyRef.current && prevSessionKeyRef.current !== nextKey && isGasConfigured()) {
+      void performSync(true);
+    }
+    prevSessionKeyRef.current = nextKey;
+  }, [activeStudentSession?.id, activeTeacherSession?.id, performSync]);
+
   const updateSettings = async (newSettings: Partial<SchoolSettings>): Promise<boolean> => {
     try {
       const res = await gasPost<SchoolSettings>('updateSettings', {
@@ -496,6 +609,10 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
         users,
         auditLogs,
         followUpNotes,
+        sessions,
+        activeStudentSession,
+        activeTeacherSession,
+        wibNowHhMm,
         offlineQueueCount,
         notifyFaceDatabaseChanged,
         updateSettings,

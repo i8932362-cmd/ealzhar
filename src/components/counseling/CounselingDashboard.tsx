@@ -414,8 +414,8 @@ export const CounselingDashboard: React.FC = () => {
       )}
 
       {showNoteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-lg max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">Catatan Tindak Lanjut Guru BK / Kesiswaan</h3>
             <p className="text-xs text-slate-500 mb-5">Simpan laporan pemanggilan, bimbingan, atau kontak wali murid.</p>
 
