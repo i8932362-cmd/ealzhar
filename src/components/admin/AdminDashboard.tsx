@@ -24,6 +24,7 @@ import {
   Table,
   Pencil,
   Layers,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
@@ -92,32 +93,64 @@ export const AdminDashboard: React.FC = () => {
   const [settingsForm, setSettingsForm] = useState<Partial<SchoolSettings>>({});
   const [settingsSaved, setSettingsSaved] = useState<boolean>(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
+  const isDirtySettingsRef = useRef<boolean>(false);
+
+  // Floating checkmark notification toast across all admin edits
+  const [savedToast, setSavedToast] = useState<string | null>(null);
+  const savedToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerSavedToast = useCallback((msg: string) => {
+    setSavedToast(msg);
+    if (savedToastTimerRef.current) clearTimeout(savedToastTimerRef.current);
+    savedToastTimerRef.current = setTimeout(() => {
+      setSavedToast(null);
+    }, 3500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (savedToastTimerRef.current) clearTimeout(savedToastTimerRef.current);
+    };
+  }, []);
 
   const handleDataMutated = useCallback(async () => {
     await notifyFaceDatabaseChanged();
   }, [notifyFaceDatabaseChanged]);
 
   useEffect(() => {
-    if (settings) {
+    if (settings && !isDirtySettingsRef.current) {
       setSettingsForm(settings);
     }
   }, [settings]);
 
+  const updateSettingsField = <K extends keyof SchoolSettings>(key: K, value: SchoolSettings[K]) => {
+    isDirtySettingsRef.current = true;
+    setSettingsSaved(false);
+    setSettingsForm((prev) => ({ ...prev, [key]: value }));
+  };
+
   // Save Settings (with changed_at conflict protection)
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingSettings) return;
+    setIsSavingSettings(true);
     setSettingsError(null);
     setSettingsSaved(false);
     try {
       const ok = await updateSettings(settingsForm);
       if (ok) {
+        isDirtySettingsRef.current = false;
         setSettingsSaved(true);
-        setTimeout(() => setSettingsSaved(false), 3000);
+        triggerSavedToast('Pengaturan sekolah tersimpan ke Google Sheets!');
+        setTimeout(() => setSettingsSaved(false), 3500);
       } else {
         setSettingsError('Gagal memperbarui pengaturan sekolah.');
       }
     } catch (err: any) {
       setSettingsError(err?.message || 'Gagal menyimpan pengaturan ke Google Sheets.');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -166,6 +199,21 @@ export const AdminDashboard: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-3 py-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8">
+      {/* Floating Saved Checkmark Toast */}
+      {savedToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-20 right-4 z-50 max-w-sm flex items-center gap-2.5 px-4 py-3 rounded-2xl bg-emerald-600 text-white shadow-xl border border-emerald-400/50 animate-in fade-in slide-in-from-top-2"
+        >
+          <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-white" />
+          <div className="text-xs font-bold leading-snug">
+            <span className="block uppercase tracking-wider text-[10px] text-emerald-100">Tersimpan</span>
+            <span>{savedToast}</span>
+          </div>
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
@@ -183,14 +231,16 @@ export const AdminDashboard: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          {saveStatus === 'saving' && (
-            <span className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold">
-              Menyimpan...
+          {(saveStatus === 'saving' || isSavingSettings) && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-bold">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Menyimpan...</span>
             </span>
           )}
-          {saveStatus === 'saved' && (
-            <span className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold">
-              Tersimpan
+          {(saveStatus === 'saved' || settingsSaved || Boolean(savedToast)) && !isSavingSettings && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Tersimpan</span>
             </span>
           )}
           {saveStatus === 'error' && (
@@ -244,6 +294,7 @@ export const AdminDashboard: React.FC = () => {
             activeTeacherSession={activeTeacherSession}
             wibNowHhMm={wibNowHhMm}
             onRefresh={handleDataMutated}
+            onSavedToast={triggerSavedToast}
           />
 
           {/* Card 2: School System Settings */}
@@ -256,9 +307,9 @@ export const AdminDashboard: React.FC = () => {
           </div>
 
           {settingsSaved && (
-            <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-200 flex items-center gap-2">
-              <Check className="w-4 h-4 text-emerald-600" />
-              <span>Pengaturan sekolah berhasil diperbarui di Google Sheets!</span>
+            <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-200 flex items-center gap-2 font-semibold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+              <span>Tersimpan! Pengaturan sekolah berhasil diperbarui di Google Sheets.</span>
             </div>
           )}
 
@@ -278,7 +329,7 @@ export const AdminDashboard: React.FC = () => {
                 <input
                   type="text"
                   value={settingsForm.schoolName || ''}
-                  onChange={e => setSettingsForm({ ...settingsForm, schoolName: e.target.value })}
+                  onChange={e => updateSettingsField('schoolName', e.target.value)}
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
@@ -291,7 +342,7 @@ export const AdminDashboard: React.FC = () => {
                 <input
                   type="text"
                   value={settingsForm.academicYear || ''}
-                  onChange={e => setSettingsForm({ ...settingsForm, academicYear: e.target.value })}
+                  onChange={e => updateSettingsField('academicYear', e.target.value)}
                   placeholder="2026/2027"
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
@@ -305,7 +356,7 @@ export const AdminDashboard: React.FC = () => {
                 <input
                   type="text"
                   value={settingsForm.foundationAddress || ''}
-                  onChange={e => setSettingsForm({ ...settingsForm, foundationAddress: e.target.value })}
+                  onChange={e => updateSettingsField('foundationAddress', e.target.value)}
                   placeholder="Jl. Pesantren Mambaul Ulum No. 45, Diwek, Jombang, Jawa Timur 61471"
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                 />
@@ -318,7 +369,7 @@ export const AdminDashboard: React.FC = () => {
                 <input
                   type="text"
                   value={settingsForm.foundationWebsite || ''}
-                  onChange={e => setSettingsForm({ ...settingsForm, foundationWebsite: e.target.value })}
+                  onChange={e => updateSettingsField('foundationWebsite', e.target.value)}
                   placeholder="https://mambaululum.sch.id"
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                 />
@@ -331,7 +382,7 @@ export const AdminDashboard: React.FC = () => {
                 <input
                   type="text"
                   value={settingsForm.foundationWatermarkUrl || ''}
-                  onChange={e => setSettingsForm({ ...settingsForm, foundationWatermarkUrl: e.target.value })}
+                  onChange={e => updateSettingsField('foundationWatermarkUrl', e.target.value)}
                   placeholder="https://... atau upload via tab Cetak Kartu"
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                 />
@@ -340,19 +391,19 @@ export const AdminDashboard: React.FC = () => {
               <TimeInput24h
                 label="Jam Mulai Default (24 Jam WIB)"
                 value={settingsForm.checkInTime || '07:00'}
-                onChange={(val) => setSettingsForm({ ...settingsForm, checkInTime: val })}
+                onChange={(val) => updateSettingsField('checkInTime', val)}
               />
 
               <TimeInput24h
                 label="Batas Terlambat Default (24 Jam WIB)"
                 value={settingsForm.lateCutoffTime || '07:15'}
-                onChange={(val) => setSettingsForm({ ...settingsForm, lateCutoffTime: val })}
+                onChange={(val) => updateSettingsField('lateCutoffTime', val)}
               />
 
               <TimeInput24h
                 label="Jam Pulang Default (24 Jam WIB)"
                 value={settingsForm.checkOutTime || '15:00'}
-                onChange={(val) => setSettingsForm({ ...settingsForm, checkOutTime: val })}
+                onChange={(val) => updateSettingsField('checkOutTime', val)}
               />
 
               <div>
@@ -364,7 +415,7 @@ export const AdminDashboard: React.FC = () => {
                   min="1"
                   max="60"
                   value={settingsForm.toiletBabMinutes ?? 10}
-                  onChange={e => setSettingsForm({ ...settingsForm, toiletBabMinutes: Number(e.target.value) })}
+                  onChange={e => updateSettingsField('toiletBabMinutes', Number(e.target.value))}
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
@@ -379,7 +430,7 @@ export const AdminDashboard: React.FC = () => {
                   min="1"
                   max="60"
                   value={settingsForm.toiletBakMinutes ?? 5}
-                  onChange={e => setSettingsForm({ ...settingsForm, toiletBakMinutes: Number(e.target.value) })}
+                  onChange={e => updateSettingsField('toiletBakMinutes', Number(e.target.value))}
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
@@ -394,7 +445,7 @@ export const AdminDashboard: React.FC = () => {
                   min="1"
                   max="60"
                   value={settingsForm.toiletMaxMinutes || 10}
-                  onChange={e => setSettingsForm({ ...settingsForm, toiletMaxMinutes: Number(e.target.value) })}
+                  onChange={e => updateSettingsField('toiletMaxMinutes', Number(e.target.value))}
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
@@ -408,7 +459,7 @@ export const AdminDashboard: React.FC = () => {
                   type="number"
                   min="1"
                   value={settingsForm.warningThresholdAbsent || 3}
-                  onChange={e => setSettingsForm({ ...settingsForm, warningThresholdAbsent: Number(e.target.value) })}
+                  onChange={e => updateSettingsField('warningThresholdAbsent', Number(e.target.value))}
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
@@ -422,7 +473,7 @@ export const AdminDashboard: React.FC = () => {
                   type="number"
                   min="1"
                   value={settingsForm.warningThresholdLate || 3}
-                  onChange={e => setSettingsForm({ ...settingsForm, warningThresholdLate: Number(e.target.value) })}
+                  onChange={e => updateSettingsField('warningThresholdLate', Number(e.target.value))}
                   className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
@@ -434,7 +485,7 @@ export const AdminDashboard: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={settingsForm.parentNotificationEnabled || false}
-                  onChange={e => setSettingsForm({ ...settingsForm, parentNotificationEnabled: e.target.checked })}
+                  onChange={e => updateSettingsField('parentNotificationEnabled', e.target.checked)}
                   className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4"
                 />
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
@@ -446,9 +497,20 @@ export const AdminDashboard: React.FC = () => {
             <div className="pt-4">
               <button
                 type="submit"
-                className="px-6 py-2.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md shadow-blue-500/25 transition"
+                disabled={isSavingSettings}
+                className="inline-flex items-center gap-2 px-6 py-2.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md shadow-blue-500/25 disabled:opacity-60 transition cursor-pointer"
               >
-                Simpan Pengaturan Sekolah
+                {isSavingSettings ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Simpan Pengaturan Sekolah</span>
+                  </>
+                )}
               </button>
             </div>
           </form>
@@ -464,6 +526,7 @@ export const AdminDashboard: React.FC = () => {
           activeUsers={activeUsers}
           currentUserId={user?.id}
           onRefresh={handleDataMutated}
+          onSavedToast={triggerSavedToast}
         />
       )}
 
@@ -475,6 +538,7 @@ export const AdminDashboard: React.FC = () => {
           teachers={teachers}
           faceTemplates={faceTemplates}
           onRefresh={handleDataMutated}
+          onSavedToast={triggerSavedToast}
         />
       )}
 
@@ -483,6 +547,7 @@ export const AdminDashboard: React.FC = () => {
         <LocationsSection
           locations={locations}
           onRefresh={handleDataMutated}
+          onSavedToast={triggerSavedToast}
         />
       )}
 
@@ -493,6 +558,7 @@ export const AdminDashboard: React.FC = () => {
           teachers={teachers}
           students={students}
           onRefresh={handleDataMutated}
+          onSavedToast={triggerSavedToast}
         />
       )}
 
@@ -502,6 +568,7 @@ export const AdminDashboard: React.FC = () => {
           students={students}
           classes={classes}
           onRefresh={handleDataMutated}
+          onSavedToast={triggerSavedToast}
         />
       )}
 
@@ -511,6 +578,7 @@ export const AdminDashboard: React.FC = () => {
           classes={classes}
           onDownloadTemplate={handleDownloadTemplate}
           onRefresh={handleDataMutated}
+          onSavedToast={triggerSavedToast}
         />
       )}
 
@@ -525,6 +593,7 @@ export const AdminDashboard: React.FC = () => {
           watermarkUrl={settings?.foundationWatermarkUrl}
           faceTemplates={faceTemplates}
           onUpdateSettings={updateSettings}
+          onSavedToast={triggerSavedToast}
           initialLevelConfigsJson={settings?.levelConfigsJson}
         />
       )}
@@ -588,8 +657,9 @@ const SessionManagementCard: React.FC<{
   activeStudentSession: AttendanceSession | null;
   activeTeacherSession: AttendanceSession | null;
   wibNowHhMm: string;
-  onRefresh: () => void | Promise<void>;
-}> = ({ sessions, activeStudentSession, activeTeacherSession, wibNowHhMm, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ sessions, activeStudentSession, activeTeacherSession, wibNowHhMm, onRefresh, onSavedToast }) => {
   const [roleTab, setRoleTab] = useState<SessionTargetType>('student');
   const [editingSession, setEditingSession] = useState<AttendanceSession | null>(null);
   const [showForm, setShowForm] = useState<boolean>(false);
@@ -702,15 +772,14 @@ const SessionManagementCard: React.FC<{
           });
 
       if (res.success) {
+        await onRefresh();
         setShowForm(false);
         setEditingSession(null);
-        setFeedback({
-          type: 'success',
-          text: editingSession
-            ? `Peraturan sesi "${payloadData.name}" diperbarui & Sheet "${(res.data as any)?.sheetName || payloadData.sheetName}" disinkronkan.`
-            : `Sesi baru "${payloadData.name}" dibuat beserta Sheet khusus "${(res.data as any)?.sheetName || payloadData.sheetName}".`,
-        });
-        await onRefresh();
+        const msg = editingSession
+          ? `Peraturan sesi "${payloadData.name}" tersimpan & Sheet "${(res.data as any)?.sheetName || payloadData.sheetName}" disinkronkan.`
+          : `Sesi baru "${payloadData.name}" tersimpan beserta Sheet khusus "${(res.data as any)?.sheetName || payloadData.sheetName}".`;
+        setFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan sesi presensi.' });
       }
@@ -731,9 +800,12 @@ const SessionManagementCard: React.FC<{
         expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
       });
       if (res.success) {
-        setDeleteTarget(null);
-        setFeedback({ type: 'success', text: `Sesi "${deleteTarget.name}" telah dihapus.` });
         await onRefresh();
+        const deletedName = deleteTarget.name;
+        setDeleteTarget(null);
+        const msg = `Sesi "${deletedName}" telah dihapus.`;
+        setFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setFeedback({ type: 'error', text: res.error || 'Gagal menghapus sesi.' });
       }
@@ -978,9 +1050,19 @@ const SessionManagementCard: React.FC<{
             <button
               type="submit"
               disabled={isSaving}
-              className="px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-sm disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-sm disabled:opacity-60 transition cursor-pointer"
             >
-              {isSaving ? 'Menyimpan & Menyiapkan Sheet...' : editingSession ? 'Simpan Perubahan Sesi' : 'Simpan & Buat Sheet Baru'}
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Menyimpan...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{editingSession ? 'Simpan Perubahan Sesi' : 'Simpan & Buat Sheet Baru'}</span>
+                </>
+              )}
             </button>
           </div>
         </form>
@@ -1089,8 +1171,9 @@ const FaceDatabaseSection: React.FC<{
   classes: SchoolClass[];
   teachers: Teacher[];
   faceTemplates: FaceTemplate[];
-  onRefresh: () => void | Promise<void>;
-}> = ({ students, classes, teachers, faceTemplates, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ students, classes, teachers, faceTemplates, onRefresh, onSavedToast }) => {
   const [selectedPersonType, setSelectedPersonType] = useState<'student' | 'teacher'>('student');
   const [selectedPersonId, setSelectedPersonId] = useState<string>('');
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
@@ -1244,12 +1327,14 @@ const FaceDatabaseSection: React.FC<{
       });
 
       if (res.success) {
-        setMessage({
-          type: 'success',
-          text: 'Wajah & foto Drive privat tersimpan rapi ke subfolder Drive dan langsung tersinkron!',
-        });
         stopCamera();
         await onRefresh();
+        const msg = 'Wajah & foto Drive privat tersimpan dan langsung tersinkron!';
+        setMessage({
+          type: 'success',
+          text: msg,
+        });
+        onSavedToast?.(msg);
       } else {
         setMessage({ type: 'error', text: res.error || 'Gagal menyimpan template wajah.' });
       }
@@ -1355,13 +1440,18 @@ const FaceDatabaseSection: React.FC<{
 
         {message && (
           <div
-            className={`p-3 rounded-xl text-xs font-medium ${
+            className={`p-3 rounded-xl text-xs font-medium flex items-center gap-2 ${
               message.type === 'error'
                 ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900'
                 : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900'
             }`}
           >
-            {message.text}
+            {message.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{message.text}</span>
           </div>
         )}
 
@@ -1446,11 +1536,12 @@ const FaceDatabaseSection: React.FC<{
                     Nyalakan Kamera
                   </button>
                   <label
-                    className={`px-4 py-2 text-xs font-bold rounded-xl border border-slate-600 text-slate-200 hover:bg-slate-800 cursor-pointer transition ${
+                    className={`px-4 py-2 text-xs font-bold rounded-xl border border-slate-600 text-slate-200 hover:bg-slate-800 cursor-pointer transition inline-flex items-center gap-1.5 ${
                       !selectedPersonId || isCapturing ? 'opacity-50 pointer-events-none' : ''
                     }`}
                   >
-                    <span>{isCapturing ? 'Memproses Foto...' : 'Upload Foto Wajah'}</span>
+                    {isCapturing && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>{isCapturing ? 'Menyimpan Foto...' : 'Upload Foto Wajah'}</span>
                     <input
                       ref={photoUploadRef}
                       type="file"
@@ -1471,9 +1562,19 @@ const FaceDatabaseSection: React.FC<{
                 type="button"
                 onClick={handleEnrollFace}
                 disabled={isCapturing}
-                className="flex-1 py-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow transition"
+                className="flex-1 py-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow transition inline-flex items-center justify-center gap-2 disabled:opacity-60"
               >
-                {isCapturing ? 'Mengekstrak Vektor...' : 'Ambil Foto & Simpan Vektor'}
+                {isCapturing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan Vektor Wajah...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Ambil Foto & Simpan Vektor</span>
+                  </>
+                )}
               </button>
               <button
                 type="button"
@@ -1573,9 +1674,11 @@ const FaceDatabaseSection: React.FC<{
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.updatedAt,
             });
-            setMessage({ type: 'success', text: `Data wajah ${deleteTarget.name} berhasil dihapus.` });
-            setDeleteTarget(null);
             await onRefresh();
+            const msg = `Data wajah ${deleteTarget.name} berhasil dihapus.`;
+            setMessage({ type: 'success', text: msg });
+            setDeleteTarget(null);
+            onSavedToast?.(msg);
           } catch (err: any) {
             setMessage({ type: 'error', text: err?.message || 'Gagal menghapus data wajah.' });
             setDeleteTarget(null);
@@ -1594,8 +1697,9 @@ const UserManagementSection: React.FC<{
   classes: SchoolClass[];
   activeUsers: Array<{ userId: string; activeTab: string; deviceLabel: string }>;
   currentUserId?: string;
-  onRefresh: () => void;
-}> = ({ users, classes, activeUsers, currentUserId, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ users, classes, activeUsers, currentUserId, onRefresh, onSavedToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -1609,6 +1713,35 @@ const UserManagementSection: React.FC<{
   const [resetTarget, setResetTarget] = useState<{ id: string; name: string; diubah_pada?: string } | null>(null);
   const [resetNewPassword, setResetNewPassword] = useState('');
 
+  // Edit User Modal state
+  const [editingUser, setEditingUser] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState<{
+    name: string;
+    username: string;
+    email: string;
+    role: 'admin' | 'kepala_sekolah' | 'wali_kelas' | 'bk' | 'kesiswaan' | 'guru';
+    classId: string;
+    nip: string;
+    password: string;
+    isActive: boolean;
+  }>({
+    name: '',
+    username: '',
+    email: '',
+    role: 'guru',
+    classId: '',
+    nip: '',
+    password: '',
+    isActive: true,
+  });
+
+  // Loading states
+  const [isSavingUser, setIsSavingUser] = useState(false);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [togglingUserId, setTogglingUserId] = useState<string | null>(null);
+  const [deleteUserTarget, setDeleteUserTarget] = useState<any | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
+
   const onlineUserIds = new Set(activeUsers.map(a => a.userId));
   const visibleUsers = useMemo(
     () =>
@@ -1620,19 +1753,38 @@ const UserManagementSection: React.FC<{
     [users]
   );
 
+  const openEditUserModal = (target: any) => {
+    setUserFeedback(null);
+    setEditingUser(target);
+    setEditForm({
+      name: target.name || '',
+      username: target.username || '',
+      email: target.email || '',
+      role: (target.role || 'guru') as any,
+      classId: target.classId || '',
+      nip: target.nip || '',
+      password: '',
+      isActive: target.isActive !== false,
+    });
+  };
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingUser) return;
     setUserFeedback(null);
     if (username.trim().toLowerCase() === 'superadmin') {
       setUserFeedback({ type: 'error', text: 'Admin tidak dapat membuat atau mengatur akun Superadmin.' });
       return;
     }
+    setIsSavingUser(true);
     try {
       const res = await gasPost('createRecord', {
         entity: 'Users',
-        data: { username, password, name, role, classId, email, nip, subject },
+        data: { username: username.trim(), password, name: name.trim(), role, classId, email: email.trim(), nip: nip.trim(), subject: subject.trim() },
       });
       if (res.success) {
+        await onRefresh();
+        const createdName = name.trim();
         setShowModal(false);
         setUsername('');
         setPassword('');
@@ -1641,13 +1793,70 @@ const UserManagementSection: React.FC<{
         setNip('');
         setSubject('');
         setClassId('');
-        setUserFeedback({ type: 'success', text: `Akun "${name}" berhasil ditambahkan dan langsung disinkronkan.` });
-        onRefresh();
+        const msg = `Akun "${createdName}" berhasil ditambahkan & tersimpan.`;
+        setUserFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setUserFeedback({ type: 'error', text: res.error || 'Gagal membuat pengguna' });
       }
     } catch (e: any) {
       setUserFeedback({ type: 'error', text: e.message || 'Gagal membuat pengguna' });
+    } finally {
+      setIsSavingUser(false);
+    }
+  };
+
+  const handleUpdateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser || isSavingUser) return;
+    setUserFeedback(null);
+    const trimmedUsername = editForm.username.trim();
+    const trimmedName = editForm.name.trim();
+    if (!trimmedName || !trimmedUsername) {
+      setUserFeedback({ type: 'error', text: 'Nama lengkap dan username wajib diisi.' });
+      return;
+    }
+    if (trimmedUsername.toLowerCase() === 'superadmin') {
+      setUserFeedback({ type: 'error', text: 'Username "superadmin" dicadangkan untuk akun Superadmin.' });
+      return;
+    }
+    if (editForm.password && editForm.password.length < 5) {
+      setUserFeedback({ type: 'error', text: 'Kata sandi baru minimal 5 karakter (atau kosongkan jika tidak diubah).' });
+      return;
+    }
+    setIsSavingUser(true);
+    try {
+      const updatePayload: Record<string, any> = {
+        name: trimmedName,
+        username: trimmedUsername,
+        email: editForm.email.trim(),
+        role: editForm.role,
+        classId: editForm.role === 'wali_kelas' ? editForm.classId : '',
+        nip: editForm.nip.trim(),
+        isActive: editForm.isActive,
+      };
+      if (editForm.password.trim()) {
+        updatePayload.password = editForm.password.trim();
+      }
+      const res = await gasPost('updateRecord', {
+        entity: 'Users',
+        id: editingUser.id,
+        data: updatePayload,
+        expectedUpdatedAt: editingUser.diubah_pada || editingUser.updatedAt,
+      });
+      if (res.success) {
+        await onRefresh();
+        setEditingUser(null);
+        const msg = `Perubahan akun "${trimmedName}" (${trimmedUsername}) tersimpan ke Google Sheets.`;
+        setUserFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
+      } else {
+        setUserFeedback({ type: 'error', text: res.error || 'Gagal menyimpan perubahan akun.' });
+      }
+    } catch (e: any) {
+      setUserFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan perubahan akun.' });
+    } finally {
+      setIsSavingUser(false);
     }
   };
 
@@ -1657,6 +1866,7 @@ const UserManagementSection: React.FC<{
       setUserFeedback({ type: 'error', text: 'Akun Superadmin tidak dapat diubah oleh Admin.' });
       return;
     }
+    setTogglingUserId(targetUser.id);
     try {
       const nextActive = !targetUser.isActive;
       const res = await gasPost('updateRecord', {
@@ -1666,37 +1876,49 @@ const UserManagementSection: React.FC<{
         expectedUpdatedAt: targetUser.diubah_pada || targetUser.updatedAt,
       });
       if (res.success) {
-        setUserFeedback({
-          type: 'success',
-          text: `Status akun "${targetUser.name}" diubah menjadi ${nextActive ? 'Aktif' : 'Nonaktif'}.`,
-        });
-        onRefresh();
+        await onRefresh();
+        const msg = `Status akun "${targetUser.name}" diubah menjadi ${nextActive ? 'Aktif' : 'Nonaktif'}.`;
+        setUserFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
+      } else {
+        setUserFeedback({ type: 'error', text: res.error || 'Gagal memperbarui status pengguna.' });
       }
     } catch (e: any) {
       setUserFeedback({ type: 'error', text: e.message || 'Gagal memperbarui status pengguna.' });
+    } finally {
+      setTogglingUserId(null);
     }
   };
 
-  const handleDeleteUser = async (targetUser: any) => {
+  const handleConfirmDeleteUser = async () => {
+    if (!deleteUserTarget) return;
     setUserFeedback(null);
-    if (String(targetUser.role || '').toLowerCase() === 'superadmin') {
+    if (String(deleteUserTarget.role || '').toLowerCase() === 'superadmin') {
       setUserFeedback({ type: 'error', text: 'Akun Superadmin tidak dapat dihapus oleh Admin.' });
+      setDeleteUserTarget(null);
       return;
     }
+    setIsDeletingUser(true);
     try {
       const res = await gasPost('softDeleteRecord', {
         entity: 'Users',
-        id: targetUser.id,
-        expectedUpdatedAt: targetUser.diubah_pada || targetUser.updatedAt,
+        id: deleteUserTarget.id,
+        expectedUpdatedAt: deleteUserTarget.diubah_pada || deleteUserTarget.updatedAt,
       });
       if (res.success) {
-        setUserFeedback({ type: 'success', text: `Akun "${targetUser.name}" berhasil dihapus (soft delete).` });
-        onRefresh();
+        await onRefresh();
+        const deletedName = deleteUserTarget.name;
+        setDeleteUserTarget(null);
+        const msg = `Akun "${deletedName}" berhasil dihapus.`;
+        setUserFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setUserFeedback({ type: 'error', text: res.error || 'Gagal menghapus pengguna.' });
       }
     } catch (e: any) {
       setUserFeedback({ type: 'error', text: e.message || 'Gagal menghapus pengguna.' });
+    } finally {
+      setIsDeletingUser(false);
     }
   };
 
@@ -1706,6 +1928,8 @@ const UserManagementSection: React.FC<{
       setUserFeedback({ type: 'error', text: 'Password baru minimal 5 karakter.' });
       return;
     }
+    if (isResettingPassword) return;
+    setIsResettingPassword(true);
     try {
       const res = await gasPost('resetUserPassword', {
         id: resetTarget.id,
@@ -1713,15 +1937,20 @@ const UserManagementSection: React.FC<{
         expectedUpdatedAt: resetTarget.diubah_pada,
       });
       if (res.success) {
-        setUserFeedback({ type: 'success', text: `Kata sandi "${resetTarget.name}" berhasil direset.` });
+        await onRefresh();
+        const targetName = resetTarget.name;
         setResetTarget(null);
         setResetNewPassword('');
-        onRefresh();
+        const msg = `Kata sandi "${targetName}" berhasil diperbarui & tersimpan.`;
+        setUserFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setUserFeedback({ type: 'error', text: res.error || 'Gagal mereset kata sandi.' });
       }
     } catch (e: any) {
       setUserFeedback({ type: 'error', text: e.message || 'Gagal mereset kata sandi.' });
+    } finally {
+      setIsResettingPassword(false);
     }
   };
 
@@ -1731,11 +1960,14 @@ const UserManagementSection: React.FC<{
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white">Manajemen Akun Multi-Pengguna</h3>
           <p className="text-xs text-slate-500">
-            Kelola akun Admin, Wali Kelas, Guru BK, Kesiswaan & Guru beserta status online real-time (Sandi Superadmin terisolasi di cache Superadmin)
+            Atur username login, kata sandi, dan peran untuk Admin, Wali Kelas, Guru BK, Kesiswaan, Kepala Sekolah &amp; Guru. Setiap login menu wajib memasukkan username &amp; sandi yang diatur di sini.
           </p>
         </div>
         <button
-          onClick={() => setShowModal(true)}
+          onClick={() => {
+            setUserFeedback(null);
+            setShowModal(true);
+          }}
           className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition"
         >
           <Plus className="w-4 h-4" />
@@ -1745,14 +1977,14 @@ const UserManagementSection: React.FC<{
 
       {userFeedback && (
         <div
-          className={`p-3 rounded-2xl text-xs flex items-center gap-2 border ${
+          className={`p-3 rounded-2xl text-xs flex items-center gap-2 border font-semibold ${
             userFeedback.type === 'success'
               ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
               : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
           }`}
         >
           {userFeedback.type === 'success' ? (
-            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+            <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-600" />
           ) : (
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
           )}
@@ -1765,10 +1997,10 @@ const UserManagementSection: React.FC<{
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-semibold">
               <th className="py-3 px-3">Nama Lengkap</th>
-              <th className="py-3 px-3">Username</th>
+              <th className="py-3 px-3">Username Login</th>
               <th className="py-3 px-3">Peran (Role)</th>
               <th className="py-3 px-3">Kelas Binaan</th>
-              <th className="py-3 px-3">Sesi & Status</th>
+              <th className="py-3 px-3">Sesi &amp; Status</th>
               <th className="py-3 px-3 text-right">Aksi</th>
             </tr>
           </thead>
@@ -1776,6 +2008,7 @@ const UserManagementSection: React.FC<{
             {visibleUsers.map(u => {
               const isOnline = onlineUserIds.has(u.id);
               const isSelf = u.id === currentUserId;
+              const isToggling = togglingUserId === u.id;
               return (
                 <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">
@@ -1792,7 +2025,7 @@ const UserManagementSection: React.FC<{
                       )}
                     </div>
                   </td>
-                  <td className="py-3 px-3 font-mono text-slate-500">{u.username}</td>
+                  <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-300 font-semibold">{u.username}</td>
                   <td className="py-3 px-3">
                     <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
                       {u.role}
@@ -1805,16 +2038,17 @@ const UserManagementSection: React.FC<{
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        disabled={isSelf}
+                        disabled={isSelf || isToggling}
                         onClick={() => void handleToggleActive(u)}
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold transition ${
                           u.isActive
                             ? 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100'
                             : 'text-slate-500 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200'
                         } disabled:opacity-60`}
                         title={isSelf ? 'Akun yang sedang digunakan' : 'Klik untuk ubah status aktif/nonaktif'}
                       >
-                        {u.isActive ? 'Aktif' : 'Nonaktif'}
+                        {isToggling && <Loader2 className="w-3 h-3 animate-spin" />}
+                        <span>{u.isActive ? 'Aktif' : 'Nonaktif'}</span>
                       </button>
                       {isOnline && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/40">
@@ -1823,7 +2057,16 @@ const UserManagementSection: React.FC<{
                       )}
                     </div>
                   </td>
-                  <td className="py-3 px-3 text-right space-x-1">
+                  <td className="py-3 px-3 text-right space-x-1 whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={() => openEditUserModal(u)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950 rounded-lg transition"
+                      title="Edit Username, Nama, Peran & Kata Sandi"
+                    >
+                      <Pencil className="w-3 h-3" />
+                      <span>Edit</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -1837,7 +2080,7 @@ const UserManagementSection: React.FC<{
                     {!isSelf && (
                       <button
                         type="button"
-                        onClick={() => void handleDeleteUser(u)}
+                        onClick={() => setDeleteUserTarget(u)}
                         className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition align-middle"
                         title="Hapus akun pengguna"
                       >
@@ -1851,6 +2094,153 @@ const UserManagementSection: React.FC<{
           </tbody>
         </table>
       </div>
+
+      <ConfirmModal
+        isOpen={Boolean(deleteUserTarget)}
+        title="Hapus Akun Pengguna"
+        message={`Hapus akun "${deleteUserTarget?.name || ''}" (username: ${deleteUserTarget?.username || '-'})?`}
+        confirmLabel="Ya, Hapus"
+        isLoading={isDeletingUser}
+        onCancel={() => setDeleteUserTarget(null)}
+        onConfirm={handleConfirmDeleteUser}
+      />
+
+      {editingUser && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
+              Edit Akun: {editingUser.name}
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-4">
+              Perubahan username &amp; sandi langsung berlaku saat pengguna login ke menu yang dilindungi kata sandi.
+            </p>
+            <form onSubmit={handleUpdateUser} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold mb-1">Nama Lengkap</label>
+                <input
+                  type="text"
+                  value={editForm.name}
+                  onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Username / Login (Wajib saat Login)</label>
+                <input
+                  type="text"
+                  value={editForm.username}
+                  onChange={e => setEditForm({ ...editForm, username: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Email (Opsional)</label>
+                <input
+                  type="email"
+                  value={editForm.email}
+                  onChange={e => setEditForm({ ...editForm, email: e.target.value })}
+                  placeholder="nama@sekolah.sch.id"
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Peran (Role)</label>
+                <select
+                  value={editForm.role}
+                  onChange={e => setEditForm({ ...editForm, role: e.target.value as any })}
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                >
+                  <option value="guru">Guru Mapel</option>
+                  <option value="wali_kelas">Wali Kelas</option>
+                  <option value="bk">Guru BK</option>
+                  <option value="kesiswaan">Staf Kesiswaan</option>
+                  <option value="kepala_sekolah">Kepala Sekolah</option>
+                  <option value="admin">Administrator</option>
+                </select>
+              </div>
+              {(editForm.role === 'guru' || editForm.role === 'wali_kelas' || editForm.role === 'bk' || editForm.role === 'kesiswaan') && (
+                <div>
+                  <label className="block font-semibold mb-1">NIP (Opsional)</label>
+                  <input
+                    type="text"
+                    value={editForm.nip}
+                    onChange={e => setEditForm({ ...editForm, nip: e.target.value })}
+                    placeholder="1990..."
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                </div>
+              )}
+              {editForm.role === 'wali_kelas' && (
+                <div>
+                  <label className="block font-semibold mb-1">Kelas yang Diampu</label>
+                  <select
+                    value={editForm.classId}
+                    onChange={e => setEditForm({ ...editForm, classId: e.target.value })}
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  >
+                    <option value="">-- Pilih Kelas --</option>
+                    {classes.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block font-semibold mb-1">Kata Sandi Baru (Kosongkan jika tidak diubah)</label>
+                <PasswordInput
+                  value={editForm.password}
+                  onChange={e => setEditForm({ ...editForm, password: e.target.value })}
+                  placeholder="Minimal 5 karakter jika ingin ganti sandi"
+                  className="text-xs py-2.5"
+                />
+              </div>
+              {editingUser.id !== currentUserId && (
+                <label className="flex items-center gap-2 cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={editForm.isActive}
+                    onChange={e => setEditForm({ ...editForm, isActive: e.target.checked })}
+                    className="rounded text-blue-600 w-4 h-4"
+                  />
+                  <span className="font-semibold">Akun Aktif (Bisa Login)</span>
+                </label>
+              )}
+
+              <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  disabled={isSavingUser}
+                  onClick={() => setEditingUser(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingUser}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60 cursor-pointer"
+                >
+                  {isSavingUser ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Simpan Perubahan</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {resetTarget && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4">
@@ -1873,16 +2263,28 @@ const UserManagementSection: React.FC<{
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
+                  disabled={isResettingPassword}
                   onClick={() => setResetTarget(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800"
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-blue-600 text-white font-bold"
+                  disabled={isResettingPassword}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60 cursor-pointer"
                 >
-                  Simpan Sandi
+                  {isResettingPassword ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Simpan Sandi</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -1906,12 +2308,12 @@ const UserManagementSection: React.FC<{
                 />
               </div>
               <div>
-                <label className="block font-semibold mb-1">Username</label>
+                <label className="block font-semibold mb-1">Username / Login</label>
                 <input
                   type="text"
                   value={username}
                   onChange={e => setUsername(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
                   required
                 />
               </div>
@@ -1998,16 +2400,28 @@ const UserManagementSection: React.FC<{
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
+                  disabled={isSavingUser}
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800"
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-600 text-white font-bold"
+                  disabled={isSavingUser}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60 cursor-pointer"
                 >
-                  Simpan
+                  {isSavingUser ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Simpan</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -2021,16 +2435,39 @@ const UserManagementSection: React.FC<{
 // Locations Section
 const LocationsSection: React.FC<{
   locations: SchoolLocation[];
-  onRefresh: () => void;
-}> = ({ locations, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ locations, onRefresh, onSavedToast }) => {
   const [showModal, setShowModal] = useState(false);
+  const [editingLocation, setEditingLocation] = useState<SchoolLocation | null>(null);
   const [name, setName] = useState('');
   const [latitude, setLatitude] = useState('');
   const [longitude, setLongitude] = useState('');
   const [radiusMeters, setRadiusMeters] = useState('150');
+  const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SchoolLocation | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const openAddModal = () => {
+    setFeedback(null);
+    setEditingLocation(null);
+    setName('');
+    setLatitude('');
+    setLongitude('');
+    setRadiusMeters('150');
+    setShowModal(true);
+  };
+
+  const openEditModal = (loc: SchoolLocation) => {
+    setFeedback(null);
+    setEditingLocation(loc);
+    setName(loc.name || '');
+    setLatitude(String(loc.latitude ?? ''));
+    setLongitude(String(loc.longitude ?? ''));
+    setRadiusMeters(String(loc.radiusMeters ?? 150));
+    setShowModal(true);
+  };
 
   const handleGetCurrentGps = () => {
     setFeedback(null);
@@ -2047,46 +2484,60 @@ const LocationsSection: React.FC<{
     }
   };
 
-  const handleCreateLocation = async (e: React.FormEvent) => {
+  const handleSaveLocation = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setFeedback(null);
+    setIsSaving(true);
     try {
-      const res = await gasPost('createRecord', {
-        entity: 'Locations',
-        data: {
-          name,
-          latitude: Number(latitude),
-          longitude: Number(longitude),
-          radiusMeters: Number(radiusMeters),
-        },
-      });
+      const payload = {
+        name: name.trim(),
+        latitude: Number(latitude),
+        longitude: Number(longitude),
+        radiusMeters: Number(radiusMeters) || 150,
+      };
+      const res = editingLocation
+        ? await gasPost('updateRecord', {
+            entity: 'Locations',
+            id: editingLocation.id,
+            data: payload,
+            expectedUpdatedAt: editingLocation.diubah_pada || editingLocation.updatedAt,
+          })
+        : await gasPost('createRecord', {
+            entity: 'Locations',
+            data: payload,
+          });
       if (res.success) {
+        await onRefresh();
+        const msg = editingLocation
+          ? `Perubahan titik lokasi "${payload.name}" tersimpan.`
+          : `Titik lokasi geofence "${payload.name}" berhasil disimpan.`;
         setShowModal(false);
+        setEditingLocation(null);
         setName('');
         setLatitude('');
         setLongitude('');
-        setFeedback({ type: 'success', text: 'Titik lokasi geofence berhasil disimpan.' });
-        onRefresh();
+        setFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan lokasi.' });
       }
     } catch (e: any) {
       setFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan lokasi.' });
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
     <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white">Titik Geofence Presensi Guru</h3>
           <p className="text-xs text-slate-500">Presensi guru hanya diterima jika berada dalam radius titik ini</p>
         </div>
         <button
-          onClick={() => {
-            setFeedback(null);
-            setShowModal(true);
-          }}
+          onClick={openAddModal}
           className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition"
         >
           <Plus className="w-4 h-4" />
@@ -2096,13 +2547,20 @@ const LocationsSection: React.FC<{
 
       {feedback && (
         <div
-          className={`p-3 rounded-xl text-xs font-medium flex items-center justify-between ${
+          className={`p-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 ${
             feedback.type === 'error'
               ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900'
               : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900'
           }`}
         >
-          <span>{feedback.text}</span>
+          <span className="flex items-center gap-2">
+            {feedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{feedback.text}</span>
+          </span>
           <button type="button" onClick={() => setFeedback(null)} className="font-bold hover:underline">
             Tutup
           </button>
@@ -2115,7 +2573,7 @@ const LocationsSection: React.FC<{
             key={loc.id}
             className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs"
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="font-bold text-sm text-slate-900 dark:text-white">{loc.name}</span>
               <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 font-bold text-[10px]">
                 Radius {loc.radiusMeters}m
@@ -2124,8 +2582,17 @@ const LocationsSection: React.FC<{
             <div className="font-mono text-slate-500 text-[11px]">
               Lat: {loc.latitude}, Lng: {loc.longitude}
             </div>
-            <div className="pt-2 flex justify-end">
+            <div className="pt-2 flex justify-end gap-3">
               <button
+                type="button"
+                onClick={() => openEditModal(loc)}
+                className="text-blue-600 hover:text-blue-700 text-xs font-semibold flex items-center gap-1"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>Edit</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setDeleteTarget(loc)}
                 className="text-red-500 hover:text-red-700 text-xs flex items-center gap-1"
               >
@@ -2153,9 +2620,11 @@ const LocationsSection: React.FC<{
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
             });
-            setFeedback({ type: 'success', text: `Lokasi ${deleteTarget.name} berhasil dihapus.` });
+            await onRefresh();
+            const msg = `Lokasi ${deleteTarget.name} berhasil dihapus.`;
+            setFeedback({ type: 'success', text: msg });
             setDeleteTarget(null);
-            onRefresh();
+            onSavedToast?.(msg);
           } catch (err: any) {
             setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus lokasi.' });
             setDeleteTarget(null);
@@ -2168,8 +2637,10 @@ const LocationsSection: React.FC<{
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
           <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Titik Lokasi Baru</h3>
-            <form onSubmit={handleCreateLocation} className="space-y-3 text-xs">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">
+              {editingLocation ? `Edit Titik Lokasi: ${editingLocation.name}` : 'Tambah Titik Lokasi Baru'}
+            </h3>
+            <form onSubmit={handleSaveLocation} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold mb-1">Nama Titik Lokasi</label>
                 <input
@@ -2232,16 +2703,31 @@ const LocationsSection: React.FC<{
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800"
+                  disabled={isSaving}
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingLocation(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-600 text-white font-bold"
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60 cursor-pointer"
                 >
-                  Simpan Lokasi
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{editingLocation ? 'Simpan Perubahan' : 'Simpan Lokasi'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -2257,13 +2743,19 @@ const ClassesSection: React.FC<{
   classes: SchoolClass[];
   teachers: Teacher[];
   students: Student[];
-  onRefresh: () => void;
-}> = ({ classes, teachers, students, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ classes, teachers, students, onRefresh, onSavedToast }) => {
   const [showModal, setShowModal] = useState(false);
+  const [editingClass, setEditingClass] = useState<SchoolClass | null>(null);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
   const [className, setClassName] = useState('');
   const [grade, setGrade] = useState('10');
   const [homeRoomTeacherId, setHomeRoomTeacherId] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isPromoting, setIsPromoting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<SchoolClass | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Promote states
@@ -2277,31 +2769,72 @@ const ClassesSection: React.FC<{
     }
   }, [classes, sourceClassId]);
 
-  const handleCreateClass = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const openAddModal = () => {
     setFeedback(null);
+    setEditingClass(null);
+    setClassName('');
+    setGrade('10');
+    setHomeRoomTeacherId('');
+    setShowModal(true);
+  };
+
+  const openEditModal = (cls: SchoolClass) => {
+    setFeedback(null);
+    setEditingClass(cls);
+    setClassName(cls.name || '');
+    setGrade(String(cls.grade || '10'));
+    setHomeRoomTeacherId(cls.homeRoomTeacherId || '');
+    setShowModal(true);
+  };
+
+  const handleSaveClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSaving) return;
+    setFeedback(null);
+    setIsSaving(true);
     try {
-      const res = await gasPost('createRecord', {
-        entity: 'Classes',
-        data: { name: className, grade, homeRoomTeacherId },
-      });
+      const payload = {
+        name: className.trim(),
+        grade,
+        homeRoomTeacherId,
+      };
+      const res = editingClass
+        ? await gasPost('updateRecord', {
+            entity: 'Classes',
+            id: editingClass.id,
+            data: payload,
+            expectedUpdatedAt: editingClass.diubah_pada || editingClass.updatedAt,
+          })
+        : await gasPost('createRecord', {
+            entity: 'Classes',
+            data: payload,
+          });
       if (res.success) {
+        await onRefresh();
+        const msg = editingClass
+          ? `Perubahan kelas "${payload.name}" tersimpan.`
+          : `Kelas baru "${payload.name}" berhasil disimpan.`;
         setShowModal(false);
+        setEditingClass(null);
         setClassName('');
         setHomeRoomTeacherId('');
-        setFeedback({ type: 'success', text: 'Kelas baru berhasil disimpan.' });
-        onRefresh();
+        setFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
         setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan kelas.' });
       }
     } catch (e: any) {
       setFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan kelas.' });
+    } finally {
+      setIsSaving(false);
     }
   };
 
   const handlePromote = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isPromoting) return;
     setFeedback(null);
+    setIsPromoting(true);
     try {
       const res = await gasPost('promoteClass', {
         sourceClassId,
@@ -2309,22 +2842,26 @@ const ClassesSection: React.FC<{
         promoteAction: action,
       });
       if (res.success) {
-        setFeedback({ type: 'success', text: res.message || 'Kenaikan kelas berhasil diproses.' });
+        await onRefresh();
+        const msg = res.message || 'Kenaikan kelas berhasil diproses & tersimpan.';
+        setFeedback({ type: 'success', text: msg });
         setShowPromoteModal(false);
-        onRefresh();
+        onSavedToast?.(msg);
       } else {
         setFeedback({ type: 'error', text: res.error || 'Gagal memproses kenaikan kelas.' });
       }
     } catch (e: any) {
       setFeedback({ type: 'error', text: e?.message || 'Gagal memproses kenaikan kelas.' });
+    } finally {
+      setIsPromoting(false);
     }
   };
 
   return (
     <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-base font-bold text-slate-900 dark:text-white">Manajemen Kelas & Promosi</h3>
+          <h3 className="text-base font-bold text-slate-900 dark:text-white">Manajemen Kelas &amp; Promosi</h3>
           <p className="text-xs text-slate-500">Kelola kelas, penetapan wali kelas, dan kenaikan kelas massal</p>
         </div>
         <div className="flex gap-2">
@@ -2338,10 +2875,7 @@ const ClassesSection: React.FC<{
             Naik Kelas Massal
           </button>
           <button
-            onClick={() => {
-              setFeedback(null);
-              setShowModal(true);
-            }}
+            onClick={openAddModal}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition"
           >
             <Plus className="w-4 h-4" />
@@ -2352,13 +2886,20 @@ const ClassesSection: React.FC<{
 
       {feedback && (
         <div
-          className={`p-3 rounded-xl text-xs font-medium flex items-center justify-between ${
+          className={`p-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 ${
             feedback.type === 'error'
               ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900'
               : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900'
           }`}
         >
-          <span>{feedback.text}</span>
+          <span className="flex items-center gap-2">
+            {feedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{feedback.text}</span>
+          </span>
           <button type="button" onClick={() => setFeedback(null)} className="font-bold hover:underline">
             Tutup
           </button>
@@ -2371,7 +2912,7 @@ const ClassesSection: React.FC<{
             key={c.id}
             className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs"
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="font-black text-sm text-slate-900 dark:text-white">{c.name}</span>
               <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold text-[10px]">
                 Tingkat {c.grade}
@@ -2383,15 +2924,65 @@ const ClassesSection: React.FC<{
             <div className="text-slate-500 text-[11px]">
               Jumlah: {students.filter(s => s.classId === c.id && s.isActive).length} Siswa
             </div>
+            <div className="pt-2 flex justify-end gap-3 border-t border-slate-200/70 dark:border-slate-700/70">
+              <button
+                type="button"
+                onClick={() => openEditModal(c)}
+                className="text-blue-600 hover:text-blue-700 text-xs font-semibold flex items-center gap-1"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>Edit</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(c)}
+                className="text-red-500 hover:text-red-700 text-xs flex items-center gap-1"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Hapus</span>
+              </button>
+            </div>
           </div>
         ))}
       </div>
 
+      <ConfirmModal
+        isOpen={Boolean(deleteTarget)}
+        title="Hapus Data Kelas"
+        message={`Hapus kelas "${deleteTarget?.name || ''}"?`}
+        confirmLabel="Ya, Hapus"
+        isLoading={isDeleting}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          setIsDeleting(true);
+          try {
+            await gasPost('softDeleteRecord', {
+              entity: 'Classes',
+              id: deleteTarget.id,
+              expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
+            });
+            await onRefresh();
+            const msg = `Kelas "${deleteTarget.name}" berhasil dihapus.`;
+            setFeedback({ type: 'success', text: msg });
+            setDeleteTarget(null);
+            onSavedToast?.(msg);
+          } catch (err: any) {
+            setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus kelas.' });
+            setDeleteTarget(null);
+          } finally {
+            setIsDeleting(false);
+          }
+        }}
+      />
+
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
           <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Kelas Baru</h3>
-            <form onSubmit={handleCreateClass} className="space-y-3 text-xs">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">
+              {editingClass ? `Edit Kelas: ${editingClass.name}` : 'Tambah Kelas Baru'}
+            </h3>
+            <form onSubmit={handleSaveClass} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold mb-1">Nama Kelas</label>
                 <input
@@ -2411,9 +3002,18 @@ const ClassesSection: React.FC<{
                   onChange={e => setGrade(e.target.value)}
                   className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                 >
-                  <option value="10">Kelas 10 (Fase E)</option>
-                  <option value="11">Kelas 11 (Fase F)</option>
-                  <option value="12">Kelas 12 (Fase F Lanjut)</option>
+                  <option value="1">Kelas 1 (SD/MI)</option>
+                  <option value="2">Kelas 2 (SD/MI)</option>
+                  <option value="3">Kelas 3 (SD/MI)</option>
+                  <option value="4">Kelas 4 (SD/MI)</option>
+                  <option value="5">Kelas 5 (SD/MI)</option>
+                  <option value="6">Kelas 6 (SD/MI)</option>
+                  <option value="7">Kelas 7 (SMP/MTS)</option>
+                  <option value="8">Kelas 8 (SMP/MTS)</option>
+                  <option value="9">Kelas 9 (SMP/MTS)</option>
+                  <option value="10">Kelas 10 (SMA/MA)</option>
+                  <option value="11">Kelas 11 (SMA/MA)</option>
+                  <option value="12">Kelas 12 (SMA/MA)</option>
                 </select>
               </div>
 
@@ -2436,16 +3036,31 @@ const ClassesSection: React.FC<{
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800"
+                  disabled={isSaving}
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingClass(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-600 text-white font-bold"
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60 cursor-pointer"
                 >
-                  Simpan Kelas
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{editingClass ? 'Simpan Perubahan' : 'Simpan Kelas'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -2511,16 +3126,28 @@ const ClassesSection: React.FC<{
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
+                  disabled={isPromoting}
                   onClick={() => setShowPromoteModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800"
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-purple-600 text-white font-bold"
+                  disabled={isPromoting}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold disabled:opacity-60 cursor-pointer"
                 >
-                  Proses Kenaikan
+                  {isPromoting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Memproses...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Proses Kenaikan</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -2535,10 +3162,12 @@ const ClassesSection: React.FC<{
 const StudentsSection: React.FC<{
   students: Student[];
   classes: SchoolClass[];
-  onRefresh: () => void;
-}> = ({ students, classes, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ students, classes, onRefresh, onSavedToast }) => {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [name, setName] = useState('');
   const [nis, setNis] = useState('');
   const [nisn, setNisn] = useState('');
@@ -2546,6 +3175,7 @@ const StudentsSection: React.FC<{
   const [classId, setClassId] = useState(classes[0]?.id || '');
   const [barcodeCard, setBarcodeCard] = useState('');
   const [parentPhone, setParentPhone] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Student | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -2556,36 +3186,80 @@ const StudentsSection: React.FC<{
     }
   }, [classes, classId]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const openAddModal = () => {
     setFeedback(null);
+    setEditingStudent(null);
+    setName('');
+    setNis('');
+    setNisn('');
+    setGender('L');
+    setClassId(classes[0]?.id || '');
+    setBarcodeCard('');
+    setParentPhone('');
+    setShowModal(true);
+  };
+
+  const openEditModal = (st: Student) => {
+    setFeedback(null);
+    setEditingStudent(st);
+    setName(st.name || '');
+    setNis(st.nis || '');
+    setNisn(st.nisn || '');
+    setGender((st.gender || 'L') as 'L' | 'P');
+    setClassId(st.classId || classes[0]?.id || '');
+    setBarcodeCard(st.barcodeCard || '');
+    setParentPhone(st.parentPhone || '');
+    setShowModal(true);
+  };
+
+  const handleSaveStudent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSaving) return;
+    setFeedback(null);
+    setIsSaving(true);
     try {
-      const res = await gasPost('createRecord', {
-        entity: 'Students',
-        data: {
-          name,
-          nis,
-          nisn,
-          gender,
-          classId,
-          barcodeCard: barcodeCard || `CARD-${nis}`,
-          parentPhone,
-        },
-      });
+      const trimmedNis = nis.trim();
+      const payload = {
+        name: name.trim(),
+        nis: trimmedNis,
+        nisn: nisn.trim(),
+        gender,
+        classId,
+        barcodeCard: barcodeCard.trim() || `CARD-${trimmedNis}`,
+        parentPhone: parentPhone.trim(),
+      };
+      const res = editingStudent
+        ? await gasPost('updateRecord', {
+            entity: 'Students',
+            id: editingStudent.id,
+            data: payload,
+            expectedUpdatedAt: editingStudent.diubah_pada || editingStudent.updatedAt,
+          })
+        : await gasPost('createRecord', {
+            entity: 'Students',
+            data: payload,
+          });
       if (res.success) {
+        await onRefresh();
+        const msg = editingStudent
+          ? `Perubahan data siswa "${payload.name}" tersimpan.`
+          : `Data siswa baru "${payload.name}" berhasil ditambahkan.`;
         setShowModal(false);
+        setEditingStudent(null);
         setName('');
         setNis('');
         setNisn('');
         setBarcodeCard('');
         setParentPhone('');
-        setFeedback({ type: 'success', text: 'Data siswa baru berhasil ditambahkan.' });
-        onRefresh();
+        setFeedback({ type: 'success', text: msg });
+        onSavedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal menambah siswa.' });
+        setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan data siswa.' });
       }
     } catch (e: any) {
-      setFeedback({ type: 'error', text: e?.message || 'Gagal menambah siswa.' });
+      setFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan data siswa.' });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -2609,11 +3283,8 @@ const StudentsSection: React.FC<{
             className="px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
           />
           <button
-            onClick={() => {
-              setFeedback(null);
-              setShowModal(true);
-            }}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition"
+            onClick={openAddModal}
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
             <span>Tambah Siswa</span>
@@ -2623,13 +3294,20 @@ const StudentsSection: React.FC<{
 
       {feedback && (
         <div
-          className={`p-3 rounded-xl text-xs font-medium flex items-center justify-between ${
+          className={`p-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 ${
             feedback.type === 'error'
               ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900'
               : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900'
           }`}
         >
-          <span>{feedback.text}</span>
+          <span className="flex items-center gap-2">
+            {feedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span>{feedback.text}</span>
+          </span>
           <button type="button" onClick={() => setFeedback(null)} className="font-bold hover:underline">
             Tutup
           </button>
@@ -2666,10 +3344,20 @@ const StudentsSection: React.FC<{
                     {s.hasFaceEnrolled ? 'Terdaftar' : 'Belum'}
                   </span>
                 </td>
-                <td className="py-3 px-3 text-right">
+                <td className="py-3 px-3 text-right whitespace-nowrap space-x-1">
                   <button
+                    type="button"
+                    onClick={() => openEditModal(s)}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40 rounded-lg transition"
+                    title="Edit data siswa"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setDeleteTarget(s)}
-                    className="p-1 text-slate-400 hover:text-red-600 transition"
+                    className="p-1 text-slate-400 hover:text-red-600 transition align-middle"
                     title="Hapus siswa"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -2697,9 +3385,11 @@ const StudentsSection: React.FC<{
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
             });
-            setFeedback({ type: 'success', text: `Siswa ${deleteTarget.name} berhasil dihapus.` });
+            await onRefresh();
+            const msg = `Siswa ${deleteTarget.name} berhasil dihapus.`;
+            setFeedback({ type: 'success', text: msg });
             setDeleteTarget(null);
-            onRefresh();
+            onSavedToast?.(msg);
           } catch (err: any) {
             setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus siswa.' });
             setDeleteTarget(null);
@@ -2712,8 +3402,10 @@ const StudentsSection: React.FC<{
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
           <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Siswa Baru</h3>
-            <form onSubmit={handleCreate} className="space-y-3 text-xs">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">
+              {editingStudent ? `Edit Siswa: ${editingStudent.name}` : 'Tambah Siswa Baru'}
+            </h3>
+            <form onSubmit={handleSaveStudent} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold mb-1">Nama Lengkap</label>
                 <input
@@ -2800,16 +3492,31 @@ const StudentsSection: React.FC<{
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800"
+                  disabled={isSaving}
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingStudent(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-600 text-white font-bold"
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60 cursor-pointer"
                 >
-                  Simpan Siswa
+                  {isSaving ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{editingStudent ? 'Simpan Perubahan' : 'Simpan Siswa'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -2824,8 +3531,9 @@ const StudentsSection: React.FC<{
 const BulkUploadSection: React.FC<{
   classes: SchoolClass[];
   onDownloadTemplate: () => void;
-  onRefresh: () => void;
-}> = ({ classes, onDownloadTemplate, onRefresh }) => {
+  onRefresh: () => Promise<void> | void;
+  onSavedToast?: (msg: string) => void;
+}> = ({ classes, onDownloadTemplate, onRefresh, onSavedToast }) => {
   const [selectedClassId, setSelectedClassId] = useState(classes[0]?.id || '');
   const [parsedRows, setParsedRows] = useState<any[]>([]);
   const [errorReport, setErrorReport] = useState<any[]>([]);
@@ -2868,7 +3576,7 @@ const BulkUploadSection: React.FC<{
   };
 
   const handleExecuteImport = async () => {
-    if (parsedRows.length === 0) return;
+    if (parsedRows.length === 0 || isProcessing) return;
     setIsProcessing(true);
     setUploadError(null);
     try {
@@ -2883,9 +3591,11 @@ const BulkUploadSection: React.FC<{
       });
 
       if (res.success) {
-        setUploadResult(res.message || null);
+        await onRefresh();
+        const msg = res.message || `Import ${res.importedCount} data siswa tersimpan ke Google Sheets.`;
+        setUploadResult(msg);
         setErrorReport(res.errorRows || []);
-        onRefresh();
+        onSavedToast?.(msg);
       } else {
         setUploadError(res.error || 'Import gagal.');
       }
@@ -2941,7 +3651,7 @@ const BulkUploadSection: React.FC<{
       )}
 
       {uploadResult && (
-        <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-xs text-emerald-800 dark:text-emerald-200 flex items-center gap-2 border border-emerald-200">
+        <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-xs text-emerald-800 dark:text-emerald-200 flex items-center gap-2 border border-emerald-200 font-semibold">
           <CheckCircle2 className="w-5 h-5 text-emerald-500 flex-shrink-0" />
           <span>{uploadResult}</span>
         </div>
@@ -2962,7 +3672,7 @@ const BulkUploadSection: React.FC<{
 
       {parsedRows.length > 0 && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-bold text-slate-900 dark:text-white">
               Pratinjau Data ({parsedRows.length} Baris Terdeteksi)
             </span>
@@ -2970,9 +3680,19 @@ const BulkUploadSection: React.FC<{
             <button
               onClick={handleExecuteImport}
               disabled={isProcessing}
-              className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow disabled:opacity-50 transition"
+              className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow disabled:opacity-60 transition cursor-pointer"
             >
-              {isProcessing ? 'Memproses Import...' : 'Simpan Semua ke Database'}
+              {isProcessing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Menyimpan ke Database...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Simpan Semua ke Database</span>
+                </>
+              )}
             </button>
           </div>
 

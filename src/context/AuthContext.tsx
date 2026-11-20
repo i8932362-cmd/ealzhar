@@ -45,9 +45,14 @@ const BOOTSTRAP_ADMIN_USER: AuthUser = {
 
 function readCachedUserProfile(expectedUserId: string | null): AuthUser | null {
   if (typeof window === 'undefined' || !expectedUserId) return null;
+  try {
+    localStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
+  } catch {
+    // Ignore
+  }
   if (expectedUserId === BOOTSTRAP_SUPERADMIN_USER.id) return BOOTSTRAP_SUPERADMIN_USER;
   try {
-    const raw = sessionStorage.getItem(AUTH_PROFILE_CACHE_KEY) || localStorage.getItem(AUTH_PROFILE_CACHE_KEY);
+    const raw = sessionStorage.getItem(AUTH_PROFILE_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AuthUser;
     if (parsed && parsed.id === expectedUserId) return parsed;
@@ -61,13 +66,11 @@ function readCachedUserProfile(expectedUserId: string | null): AuthUser | null {
 function writeCachedUserProfile(profile: AuthUser | null): void {
   if (typeof window === 'undefined') return;
   try {
+    localStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
     if (!profile) {
       sessionStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
-      localStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
     } else {
-      const json = JSON.stringify(profile);
-      sessionStorage.setItem(AUTH_PROFILE_CACHE_KEY, json);
-      localStorage.setItem(AUTH_PROFILE_CACHE_KEY, json);
+      sessionStorage.setItem(AUTH_PROFILE_CACHE_KEY, JSON.stringify(profile));
     }
   } catch {
     // Ignore storage errors

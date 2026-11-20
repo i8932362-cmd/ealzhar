@@ -3014,6 +3014,59 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
         String(patch.username || '').toLowerCase() === 'superadmin') {
       return { success: false, mutated: false, error: 'Peran Superadmin tidak dapat ditetapkan oleh Admin.' };
     }
+    if (patch.hasOwnProperty('username')) {
+      var nextUsername = String(patch.username || '').trim();
+      if (!nextUsername) {
+        return { success: false, mutated: false, error: 'Username wajib diisi.' };
+      }
+      for (var un = 0; un < curUsersCheck.length; un++) {
+        if (String(curUsersCheck[un].id) !== String(id) &&
+            String(curUsersCheck[un].username || '').trim().toLowerCase() === nextUsername.toLowerCase()) {
+          return { success: false, mutated: false, error: 'Username "' + nextUsername + '" sudah digunakan akun lain.' };
+        }
+      }
+      patch.username = nextUsername;
+    }
+    if (patch.hasOwnProperty('password')) {
+      var plainPwd = String(patch.password || '');
+      if (plainPwd.length > 0) {
+        if (plainPwd.length < 5) {
+          return { success: false, mutated: false, error: 'Password baru minimal 5 karakter.' };
+        }
+        patch.passwordHash = hashPassword_(plainPwd);
+      }
+      delete patch.password;
+    }
+    delete patch.subject;
+  }
+
+  if (entity === 'Students' && patch.hasOwnProperty('nis')) {
+    var nextNis = String(patch.nis || '').trim();
+    if (!nextNis) {
+      return { success: false, mutated: false, error: 'NIS siswa wajib diisi.' };
+    }
+    var curStudentsCheck = readActiveRows_(ss, 'Students');
+    for (var stc = 0; stc < curStudentsCheck.length; stc++) {
+      if (String(curStudentsCheck[stc].id) !== String(id) &&
+          String(curStudentsCheck[stc].nis || '').trim() === nextNis) {
+        return { success: false, mutated: false, error: 'NIS "' + nextNis + '" sudah terdaftar pada siswa lain.' };
+      }
+    }
+    patch.nis = nextNis;
+  }
+
+  if (entity === 'Classes' && patch.hasOwnProperty('homeRoomTeacherId')) {
+    var resolvedTeacherName = '';
+    if (patch.homeRoomTeacherId) {
+      var tchRows = readActiveRows_(ss, 'Teachers');
+      for (var tc = 0; tc < tchRows.length; tc++) {
+        if (String(tchRows[tc].id) === String(patch.homeRoomTeacherId)) {
+          resolvedTeacherName = tchRows[tc].name;
+          break;
+        }
+      }
+    }
+    patch.homeRoomTeacherName = resolvedTeacherName;
   }
 
   var res = updateRowCellsById_(sheet, entity, id, patch, expectedUpdatedAt);

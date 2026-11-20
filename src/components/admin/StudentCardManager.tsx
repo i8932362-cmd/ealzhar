@@ -25,6 +25,7 @@ import {
   Image as ImageIcon,
   PenTool,
   Trash2,
+  Loader2,
 } from 'lucide-react';
 import { Student, SchoolClass, EducationLevel, LevelConfig, FaceTemplate, SchoolSettings } from '../../types/index.ts';
 import {
@@ -42,6 +43,7 @@ interface StudentCardManagerProps {
   watermarkUrl?: string;
   faceTemplates?: FaceTemplate[];
   onUpdateSettings?: (newSettings: Partial<SchoolSettings>) => Promise<boolean>;
+  onSavedToast?: (msg: string) => void;
   initialLevelConfigsJson?: string;
 }
 
@@ -71,6 +73,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   watermarkUrl,
   faceTemplates = [],
   onUpdateSettings,
+  onSavedToast,
   initialLevelConfigsJson,
 }) => {
   // Filters & State
@@ -92,7 +95,9 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
   const [showConfigModal, setShowConfigModal] = useState<boolean>(false);
   const [activeConfigTab, setActiveConfigTab] = useState<EducationLevel>('SMA/MA');
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [isSavingConfig, setIsSavingConfig] = useState<boolean>(false);
+  const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const isDirtyRef = useRef<boolean>(false);
 
   // Batch download progress
   const [isExportingBatch, setIsExportingBatch] = useState<boolean>(false);
@@ -100,13 +105,24 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const [downloadSuccessMessage, setDownloadSuccessMessage] = useState<string | null>(null);
   const [cardError, setCardError] = useState<string | null>(null);
 
-  // Sync initialLevelConfigsJson when changed from parent
+  // Sync initialLevelConfigsJson when changed from parent (only if admin is not actively editing)
   useEffect(() => {
+    if (showConfigModal || isDirtyRef.current) return;
     const parsed = parseLevelConfigsSafely(initialLevelConfigsJson);
     if (parsed) {
       setLevelConfigs(prev => ({ ...prev, ...parsed }));
     }
-  }, [initialLevelConfigsJson]);
+  }, [initialLevelConfigsJson, showConfigModal]);
+
+  const updateLevelConfigs = (
+    updater:
+      | Record<EducationLevel, LevelConfig>
+      | ((prev: Record<EducationLevel, LevelConfig>) => Record<EducationLevel, LevelConfig>)
+  ) => {
+    isDirtyRef.current = true;
+    setSaveFeedback(null);
+    setLevelConfigs(updater);
+  };
 
   // Helper to determine student level
   const getStudentLevel = (student: Student): EducationLevel => {
@@ -166,7 +182,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      setLevelConfigs(prev => ({
+      updateLevelConfigs(prev => ({
         ...prev,
         [activeConfigTab]: {
           ...prev[activeConfigTab],
@@ -179,25 +195,39 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
   // Save Configs to server & local state
   const handleSaveConfigs = async () => {
-    setSaveStatus('Menyimpan...');
-    if (onUpdateSettings) {
-      const success = await onUpdateSettings({
-        levelConfigsJson: JSON.stringify(levelConfigs),
-      });
-      if (success) {
-        setSaveStatus('Tersimpan di Google Sheets!');
-        setTimeout(() => {
-          setSaveStatus(null);
-          setShowConfigModal(false);
-        }, 800);
+    if (isSavingConfig) return;
+    setIsSavingConfig(true);
+    setSaveFeedback(null);
+    try {
+      if (onUpdateSettings) {
+        const success = await onUpdateSettings({
+          levelConfigsJson: JSON.stringify(levelConfigs),
+        });
+        if (success) {
+          isDirtyRef.current = false;
+          const msg = 'Tersimpan di Google Sheets!';
+          setSaveFeedback({ type: 'success', text: msg });
+          onSavedToast?.('Pengaturan kartu pelajar & tanda tangan tersimpan di Google Sheets!');
+          setTimeout(() => {
+            setSaveFeedback(null);
+            setShowConfigModal(false);
+          }, 900);
+          return;
+        }
+        setSaveFeedback({ type: 'error', text: 'Gagal menyimpan pengaturan kartu ke Google Sheets.' });
         return;
       }
+      isDirtyRef.current = false;
+      setSaveFeedback({ type: 'success', text: 'Tersimpan di sesi browser!' });
+      setTimeout(() => {
+        setSaveFeedback(null);
+        setShowConfigModal(false);
+      }, 900);
+    } catch (err: any) {
+      setSaveFeedback({ type: 'error', text: err?.message || 'Gagal menyimpan pengaturan kartu ke Google Sheets.' });
+    } finally {
+      setIsSavingConfig(false);
     }
-    setSaveStatus('Tersimpan di sesi browser!');
-    setTimeout(() => {
-      setSaveStatus(null);
-      setShowConfigModal(false);
-    }, 800);
   };
 
   // 1. Download Single Card JPG (Front, Back)
@@ -312,7 +342,11 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
           <div className="flex flex-wrap items-center gap-2.5">
             {/* Template Config Editor Modal Trigger */}
             <button
-              onClick={() => setShowConfigModal(true)}
+              onClick={() => {
+                isDirtyRef.current = false;
+                setSaveFeedback(null);
+                setShowConfigModal(true);
+              }}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 transition"
               title="Sesuaikan Logo, TTD Kepala Sekolah, Website, QR, dan Watermark per Jenjang"
             >
@@ -622,7 +656,12 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                 </div>
               </div>
               <button
-                onClick={() => setShowConfigModal(false)}
+                type="button"
+                onClick={() => {
+                  isDirtyRef.current = false;
+                  setSaveFeedback(null);
+                  setShowConfigModal(false);
+                }}
                 className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl"
               >
                 ✕
@@ -988,27 +1027,52 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
               </div>
             )}
 
-            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div>
-                {saveStatus && (
-                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                    {saveStatus}
+                {saveFeedback && (
+                  <span
+                    className={`inline-flex items-center gap-1.5 text-xs font-bold ${
+                      saveFeedback.type === 'success'
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-red-600 dark:text-red-400'
+                    }`}
+                  >
+                    {saveFeedback.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    )}
+                    <span>{saveFeedback.text}</span>
                   </span>
                 )}
               </div>
 
               <div className="flex gap-3">
                 <button
-                  onClick={() => setLevelConfigs(DEFAULT_LEVEL_CONFIGS)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                  type="button"
+                  disabled={isSavingConfig}
+                  onClick={() => updateLevelConfigs(DEFAULT_LEVEL_CONFIGS)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 disabled:opacity-50"
                 >
                   Reset Default
                 </button>
                 <button
+                  type="button"
+                  disabled={isSavingConfig}
                   onClick={handleSaveConfigs}
-                  className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-sm"
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-sm disabled:opacity-60 transition cursor-pointer"
                 >
-                  Simpan & Terapkan Perubahan
+                  {isSavingConfig ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Simpan &amp; Terapkan Perubahan</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>

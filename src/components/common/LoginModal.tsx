@@ -234,20 +234,22 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Username
+                  {viewMode === 'superadmin' ? 'Username Superadmin' : 'Username / Login (Diatur Admin)'}
                 </label>
                 <div className="relative">
                   <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
+                    name="login-username"
+                    autoComplete="off"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     placeholder={
                       viewMode === 'superadmin'
                         ? 'Masukkan username superadmin'
                         : viewMode === 'teacher'
-                          ? 'Masukkan username guru Anda'
-                          : 'Masukkan username Anda'
+                          ? 'Masukkan username guru yang diatur Admin'
+                          : 'Masukkan username yang diatur Admin'
                     }
                     autoFocus
                     className="w-full pl-10 pr-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -257,10 +259,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Password
+                  Kata Sandi
                 </label>
                 <PasswordInput
                   leftIcon={<Lock className="w-4 h-4" />}
+                  name="login-password"
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Masukkan kata sandi"

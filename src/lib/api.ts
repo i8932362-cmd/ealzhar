@@ -75,31 +75,29 @@ export function getWibTodayStr(): string {
 
 export function getStoredSessionUserId(): string | null {
   if (typeof window === 'undefined') return null;
-  const sessionId = sessionStorage.getItem(AUTH_SESSION_KEY);
-  if (sessionId) return sessionId;
-  if (sessionStorage.getItem(LOGOUT_FLAG_KEY) === '1') return null;
-  const legacyLocal = localStorage.getItem(AUTH_SESSION_KEY);
-  if (legacyLocal) {
-    sessionStorage.setItem(AUTH_SESSION_KEY, legacyLocal);
+  try {
+    // Clear legacy persistent localStorage login so every fresh browser session requires username & password
+    localStorage.removeItem(AUTH_SESSION_KEY);
+  } catch {
+    // Ignore storage errors
   }
-  return legacyLocal;
+  if (sessionStorage.getItem(LOGOUT_FLAG_KEY) === '1') return null;
+  return sessionStorage.getItem(AUTH_SESSION_KEY);
 }
 
 export function setStoredSessionUserId(userId: string | null): void {
   if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(AUTH_SESSION_KEY);
+  } catch {
+    // Ignore
+  }
   if (userId) {
     sessionStorage.removeItem(LOGOUT_FLAG_KEY);
     sessionStorage.setItem(AUTH_SESSION_KEY, userId);
-    if (!localStorage.getItem(AUTH_SESSION_KEY)) {
-      localStorage.setItem(AUTH_SESSION_KEY, userId);
-    }
   } else {
-    const current = sessionStorage.getItem(AUTH_SESSION_KEY);
     sessionStorage.removeItem(AUTH_SESSION_KEY);
     sessionStorage.setItem(LOGOUT_FLAG_KEY, '1');
-    if (current && localStorage.getItem(AUTH_SESSION_KEY) === current) {
-      localStorage.removeItem(AUTH_SESSION_KEY);
-    }
   }
 }
 
