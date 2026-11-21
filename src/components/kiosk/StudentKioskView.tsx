@@ -23,6 +23,7 @@ import { Student, SchoolClass, ToiletPermit, FrequentToiletStudent, AttendanceSe
 import { useSync } from '../../context/SyncContext.tsx';
 import { queueStudentScanBatch, postWithOfflineFallback } from '../../lib/api.ts';
 import { formatWibTime24, getNextUpcomingSessionForType, sortSessions } from '../../lib/sessions.ts';
+import { CameraPreviewStage } from '../common/CameraPreviewStage.tsx';
 import {
   loadFaceDetectionModels,
   areFaceModelsLoaded,
@@ -139,6 +140,9 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
   );
   const [cameraError, setCameraError] = useState<{ title: string; message: string } | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [mirrorPreview, setMirrorPreview] = useState<boolean>(true);
+  const mirrorPreviewRef = useRef<boolean>(true);
+  mirrorPreviewRef.current = mirrorPreview;
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [returningPermitId, setReturningPermitId] = useState<string | null>(null);
 
@@ -319,6 +323,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
   const switchCamera = () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(nextMode);
+    setMirrorPreview(nextMode === 'user');
     if (isCameraActive) {
       void startCamera(nextMode);
     }
@@ -387,24 +392,28 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                     }
 
                     const strokeColor = isMatched ? '#10b981' : '#f59e0b';
+                    const drawX = mirrorPreviewRef.current
+                      ? Math.max(0, canvas.width - (box.x + box.width))
+                      : box.x;
+
                     ctx.save();
                     // Subtle full bounding box aligned to face database coordinates
                     ctx.lineWidth = 2.5;
                     ctx.strokeStyle = strokeColor;
-                    ctx.strokeRect(box.x, box.y, box.width, box.height);
+                    ctx.strokeRect(drawX, box.y, box.width, box.height);
 
                     // Crisp glowing corner brackets
                     const corner = Math.max(14, Math.min(26, Math.min(box.width, box.height) * 0.25));
                     ctx.lineWidth = 4.5;
                     ctx.beginPath();
                     // Top-left
-                    ctx.moveTo(box.x, box.y + corner); ctx.lineTo(box.x, box.y); ctx.lineTo(box.x + corner, box.y);
+                    ctx.moveTo(drawX, box.y + corner); ctx.lineTo(drawX, box.y); ctx.lineTo(drawX + corner, box.y);
                     // Top-right
-                    ctx.moveTo(box.x + box.width - corner, box.y); ctx.lineTo(box.x + box.width, box.y); ctx.lineTo(box.x + box.width, box.y + corner);
+                    ctx.moveTo(drawX + box.width - corner, box.y); ctx.lineTo(drawX + box.width, box.y); ctx.lineTo(drawX + box.width, box.y + corner);
                     // Bottom-left
-                    ctx.moveTo(box.x, box.y + box.height - corner); ctx.lineTo(box.x, box.y + box.height); ctx.lineTo(box.x + corner, box.y + box.height);
+                    ctx.moveTo(drawX, box.y + box.height - corner); ctx.lineTo(drawX, box.y + box.height); ctx.lineTo(drawX + corner, box.y + box.height);
                     // Bottom-right
-                    ctx.moveTo(box.x + box.width - corner, box.y + box.height); ctx.lineTo(box.x + box.width, box.y + box.height); ctx.lineTo(box.x + box.width, box.y + box.height - corner);
+                    ctx.moveTo(drawX + box.width - corner, box.y + box.height); ctx.lineTo(drawX + box.width, box.y + box.height); ctx.lineTo(drawX + box.width, box.y + box.height - corner);
                     ctx.stroke();
 
                     const baseLabel = className ? `${studentName} (${className})` : studentName;
@@ -412,7 +421,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                     ctx.font = 'bold 14px Inter, sans-serif';
                     const textWidth = ctx.measureText(label).width;
                     const pillW = textWidth + 20;
-                    const pillX = Math.max(4, Math.min(canvas.width - pillW - 4, box.x));
+                    const pillX = Math.max(4, Math.min(canvas.width - pillW - 4, drawX));
                     const pillY = box.y > 32 ? box.y - 32 : box.y + box.height + 4;
 
                     ctx.fillStyle = isMatched ? 'rgba(5, 150, 105, 0.92)' : 'rgba(217, 119, 6, 0.92)';
@@ -776,9 +785,9 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
         </div>
       </div>
 
-      {/* Main Kiosk Layout: Centered Scan Box & Camera Stage Above Monitoring Panels */}
+      {/* Main Kiosk Layout: Centered Scan Box & Wide Symmetrical Camera Stage Above Monitoring Panels */}
       <div className="max-w-7xl mx-auto space-y-6">
-        <div className="max-w-3xl mx-auto space-y-5">
+        <div className="max-w-6xl mx-auto space-y-5">
           {/* Active Session Auto-Switch Status Card (Strict 24-Hour WIB & Per-Session Sheet Isolation) */}
           {activeStudentSession ? (
             <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -893,32 +902,18 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
             </div>
           )}
 
-          {/* 2. Centered Non-Mirrored Camera View Card with 1:1 Face Database Frame Overlay */}
-          <div className="relative rounded-3xl overflow-hidden bg-slate-950 border border-slate-800 shadow-xl p-2 sm:p-3 flex flex-col items-center justify-center">
+          {/* 2. Wide Symmetrical Centered Non-Mirrored Camera View Card */}
+          <div className="relative rounded-3xl overflow-hidden bg-slate-950 border border-slate-800 shadow-xl flex flex-col items-center justify-center">
             {isCameraActive && (
-              <div
-                className="relative w-full mx-auto rounded-2xl overflow-hidden bg-black flex items-center justify-center"
-                style={{ aspectRatio: String(videoAspect || 4 / 3) }}
-              >
-                <video
-                  ref={videoRef}
-                  playsInline
-                  autoPlay
-                  muted
-                  style={{ transform: 'none' }}
-                  onLoadedMetadata={() => {
-                    if (videoRef.current?.videoWidth && videoRef.current?.videoHeight) {
-                      setVideoAspect(videoRef.current.videoWidth / videoRef.current.videoHeight);
-                    }
-                  }}
-                  className="w-full h-full object-contain block"
-                />
-                <canvas
-                  ref={canvasRef}
-                  style={{ transform: 'none' }}
-                  className="absolute inset-0 w-full h-full pointer-events-none block"
-                />
-              </div>
+              <CameraPreviewStage
+                videoRef={videoRef}
+                canvasRef={canvasRef}
+                isActive={isCameraActive}
+                showGuideFrame
+                mirrorPreview={mirrorPreview}
+                maxHeightClass="h-[58dvh] min-h-[360px] max-h-[640px] sm:h-[500px] lg:h-[580px]"
+                onVideoDimensions={(w, h) => setVideoAspect(w / h)}
+              />
             )}
 
             {!isCameraActive && (
@@ -929,7 +924,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                 <div className="space-y-1.5">
                   <h3 className="text-xl font-bold text-white">Deteksi Wajah Siswa</h3>
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    Kamera mencocokkan wajah dengan database wajah siswa, memunculkan bingkai + nama siswa yang cocok (mode normal, tanpa cermin).
+                    Kamera mencocokkan wajah dengan database wajah siswa, memunculkan bingkai + nama siswa yang cocok (kanan di kanan, kiri di kiri).
                   </p>
                 </div>
 
@@ -954,7 +949,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
             )}
 
             {isCameraActive && (
-              <div className="absolute top-5 left-5 right-5 flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
+              <div className="absolute top-3 sm:top-4 left-3 sm:left-4 right-3 sm:right-4 flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/65 backdrop-blur-md text-white text-xs font-medium border border-white/10">
                   <span
                     className={`w-2 h-2 rounded-full animate-pulse ${
@@ -969,14 +964,22 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                     {isRequestingCamera
                       ? 'Meminta izin pengaktifan kamera...'
                       : modelStatus === 'ready'
-                        ? `Frame Wajah Aktif • ${studentFaceTemplates.length} Database Wajah (Normal / Non-Cermin)`
+                        ? `Frame Wajah Aktif • ${studentFaceTemplates.length} DB (${mirrorPreview ? 'Kanan di Kanan' : 'Sensor Asli'})`
                         : modelStatus === 'error'
                           ? 'Kamera Aktif • Mode Scan Kartu'
                           : 'Kamera Aktif • Menyiapkan AI...'}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMirrorPreview((v) => !v)}
+                    className="px-2.5 py-1.5 rounded-xl bg-black/65 backdrop-blur-md text-white hover:bg-black/80 border border-white/10 text-[11px] font-semibold transition"
+                    title="Sesuaikan orientasi tampilan preview (AI tetap memakai gambar asli)"
+                  >
+                    {mirrorPreview ? 'Orientasi: Kanan=Kanan' : 'Orientasi: Sensor Asli'}
+                  </button>
                   <button
                     onClick={switchCamera}
                     className="p-2 rounded-xl bg-black/65 backdrop-blur-md text-white hover:bg-black/80 border border-white/10 transition"
@@ -996,7 +999,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 
             {/* Live Recognized Face Name Banner + Quick Check-in */}
             {isCameraActive && detectedStudentsInFrame.length > 0 && (
-              <div className="absolute bottom-12 left-5 right-5 flex flex-col gap-2 pointer-events-auto">
+              <div className="absolute bottom-3 sm:bottom-4 left-3 sm:left-4 right-3 sm:right-4 flex flex-col gap-2 pointer-events-auto">
                 {detectedStudentsInFrame.map(({ student }) => {
                   const clsName = classes.find((c) => c.id === student.classId)?.name;
                   const alreadyDone = sessionTodayAttendance.find((a) => a.studentId === student.id);

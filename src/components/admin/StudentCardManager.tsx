@@ -124,24 +124,70 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     setLevelConfigs(updater);
   };
 
-  // Helper to determine student level
-  const getStudentLevel = (student: Student): EducationLevel => {
-    if (student.level) return student.level;
-    const cls = classes.find(c => c.id === student.classId);
-    if (cls?.level) return cls.level;
-    const name = (cls?.name || '').toUpperCase();
-    if (name.includes('SMA') || name.includes('MA') || name.startsWith('X') || name.startsWith('XI') || name.startsWith('XII')) {
-      return 'SMA/MA';
-    }
-    if (name.includes('SMP') || name.includes('MTS') || name.startsWith('VII') || name.startsWith('VIII') || name.startsWith('IX')) {
-      return 'SMP/MTS';
-    }
-    return 'SD/MI';
+  // Helper to normalize and automatically detect education level configured by Admin
+  const normalizeLevelValue = (raw?: string): EducationLevel | null => {
+    const up = String(raw || '').toUpperCase().replace(/\s+/g, '');
+    if (!up) return null;
+    if (up === 'SD/MI' || up === 'SD' || up === 'MI' || up.startsWith('SD') || up.startsWith('MI')) return 'SD/MI';
+    if (up === 'SMP/MTS' || up === 'SMP' || up === 'MTS' || up.startsWith('SMP') || up.startsWith('MTS')) return 'SMP/MTS';
+    if (up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up === 'SMK' || up.startsWith('SMA') || up.startsWith('SMK') || up.startsWith('MA')) return 'SMA/MA';
+    return null;
   };
 
+  const getClassLevel = (cls?: SchoolClass): EducationLevel => {
+    if (!cls) return 'SMA/MA';
+    const explicit = normalizeLevelValue(cls.level);
+    if (explicit) return explicit;
+    const gradeNum = Number(String(cls.grade || '').replace(/[^0-9]/g, ''));
+    if (!Number.isNaN(gradeNum) && gradeNum >= 1 && gradeNum <= 12) {
+      if (gradeNum <= 6) return 'SD/MI';
+      if (gradeNum <= 9) return 'SMP/MTS';
+      return 'SMA/MA';
+    }
+    const name = (cls.name || '').toUpperCase().trim();
+    if (/\b(SMA|SMK|MA|XII|XI|X|12|11|10)\b/.test(name)) return 'SMA/MA';
+    if (/\b(SMP|MTS|IX|VIII|VII|9|8|7)\b/.test(name)) return 'SMP/MTS';
+    if (/\b(SD|MI|VI|V|IV|III|II|I|6|5|4|3|2|1)\b/.test(name)) return 'SD/MI';
+    return 'SMA/MA';
+  };
+
+  const getStudentLevel = (student: Student): EducationLevel => {
+    const explicitStdLevel = normalizeLevelValue(student.level);
+    if (explicitStdLevel) return explicitStdLevel;
+    const cls = classes.find(c => c.id === student.classId);
+    return getClassLevel(cls);
+  };
+
+  const activeStudents = students.filter(s => s.isActive);
+  const levelCounts: Record<'ALL' | EducationLevel, number> = {
+    ALL: activeStudents.length,
+    'SMA/MA': activeStudents.filter(s => getStudentLevel(s) === 'SMA/MA').length,
+    'SMP/MTS': activeStudents.filter(s => getStudentLevel(s) === 'SMP/MTS').length,
+    'SD/MI': activeStudents.filter(s => getStudentLevel(s) === 'SD/MI').length,
+  };
+
+  const hasManualLevelRef = useRef<boolean>(false);
+  const activeLevelsPresent = (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).filter(
+    lvl => levelCounts[lvl] > 0
+  );
+  const dominantLevel: EducationLevel =
+    (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).reduce((best, cur) =>
+      levelCounts[cur] > levelCounts[best] ? cur : best
+    , 'SMA/MA');
+
+  useEffect(() => {
+    if (hasManualLevelRef.current || activeStudents.length === 0) return;
+    if (activeLevelsPresent.length === 1) {
+      setSelectedLevel(activeLevelsPresent[0]);
+      setActiveConfigTab(activeLevelsPresent[0]);
+    } else {
+      setSelectedLevel('ALL');
+      setActiveConfigTab(dominantLevel);
+    }
+  }, [activeStudents.length, levelCounts['SMA/MA'], levelCounts['SMP/MTS'], levelCounts['SD/MI']]);
+
   // Filter students
-  const filteredStudents = students.filter(std => {
-    if (!std.isActive) return false;
+  const filteredStudents = activeStudents.filter(std => {
     const stdLevel = getStudentLevel(std);
     if (selectedLevel !== 'ALL' && stdLevel !== selectedLevel) return false;
     if (selectedClassId !== 'ALL' && std.classId !== selectedClassId) return false;
@@ -158,11 +204,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   // Filtered classes based on selectedLevel
   const availableClasses = classes.filter(c => {
     if (selectedLevel === 'ALL') return true;
-    if (c.level) return c.level === selectedLevel;
-    const name = c.name.toUpperCase();
-    if (selectedLevel === 'SMA/MA') return name.includes('SMA') || name.includes('MA') || name.startsWith('X') || name.startsWith('XI') || name.startsWith('XII');
-    if (selectedLevel === 'SMP/MTS') return name.includes('SMP') || name.includes('MTS') || name.startsWith('VII') || name.startsWith('VIII') || name.startsWith('IX');
-    return name.includes('SD') || name.includes('MI') || name.startsWith('I') || name.startsWith('II') || name.startsWith('III') || name.startsWith('IV') || name.startsWith('V') || name.startsWith('VI');
+    return getClassLevel(c) === selectedLevel;
   });
 
   // Handle Image File Upload Helper
@@ -386,27 +428,29 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
         {/* Filter Toolbar: Jenjang, Kelas, Pencarian, & Tampilan Sisi */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
-          {/* 1. Filter Jenjang Pendidikan */}
+          {/* 1. Filter Jenjang Pendidikan (Deteksi Otomatis dari Data Siswa) */}
           <div>
             <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
               <School className="w-3.5 h-3.5 text-blue-600" />
-              <span>Pilih Jenjang Yayasan:</span>
+              <span>Jenjang Otomatis / Filter:</span>
             </label>
             <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
               {(['ALL', 'SMA/MA', 'SMP/MTS', 'SD/MI'] as const).map(lvl => (
                 <button
                   key={lvl}
                   onClick={() => {
+                    hasManualLevelRef.current = true;
                     setSelectedLevel(lvl);
                     setSelectedClassId('ALL');
+                    if (lvl !== 'ALL') setActiveConfigTab(lvl);
                   }}
-                  className={`py-1.5 rounded-lg font-bold text-[11px] transition ${
+                  className={`py-1.5 rounded-lg font-bold text-[10px] transition ${
                     selectedLevel === lvl
                       ? 'bg-blue-600 text-white shadow-xs'
                       : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
                   }`}
                 >
-                  {lvl === 'ALL' ? 'Semua' : lvl}
+                  {lvl === 'ALL' ? `Semua (${levelCounts.ALL})` : `${lvl.split('/')[0]} (${levelCounts[lvl]})`}
                 </button>
               ))}
             </div>
@@ -419,13 +463,23 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             </label>
             <select
               value={selectedClassId}
-              onChange={e => setSelectedClassId(e.target.value)}
+              onChange={e => {
+                const val = e.target.value;
+                setSelectedClassId(val);
+                if (val !== 'ALL') {
+                  const chosenCls = classes.find(c => c.id === val);
+                  if (chosenCls) {
+                    const detectedClsLvl = getClassLevel(chosenCls);
+                    setActiveConfigTab(detectedClsLvl);
+                  }
+                }
+              }}
               className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium"
             >
               <option value="ALL">Semua Kelas ({availableClasses.length} Kelas)</option>
               {availableClasses.map(c => (
                 <option key={c.id} value={c.id}>
-                  Kelas {c.name} {c.level ? `(${c.level})` : ''}
+                  Kelas {c.name} ({getClassLevel(c)})
                 </option>
               ))}
             </select>
@@ -482,6 +536,40 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Auto-detected Jenjang Summary */}
+        {activeStudents.length > 0 && (
+          <div className="p-3 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-900 flex flex-wrap items-center justify-between gap-2 text-[11px] text-indigo-800 dark:text-indigo-200">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-600 flex-shrink-0" />
+              <span>
+                <strong>Deteksi Otomatis Jenjang Siswa:</strong>{' '}
+                {activeLevelsPresent.length === 1
+                  ? `Seluruh ${activeStudents.length} siswa aktif berada di jenjang ${activeLevelsPresent[0]} (dipilih otomatis).`
+                  : `Terdeteksi ${activeLevelsPresent.map(l => `${l}: ${levelCounts[l]}`).join(' • ')} — setiap kartu otomatis memakai template jenjang masing-masing siswa.`}
+              </span>
+            </div>
+            {hasManualLevelRef.current && (
+              <button
+                type="button"
+                onClick={() => {
+                  hasManualLevelRef.current = false;
+                  setSelectedClassId('ALL');
+                  if (activeLevelsPresent.length === 1) {
+                    setSelectedLevel(activeLevelsPresent[0]);
+                    setActiveConfigTab(activeLevelsPresent[0]);
+                  } else {
+                    setSelectedLevel('ALL');
+                    setActiveConfigTab(dominantLevel);
+                  }
+                }}
+                className="font-bold text-indigo-700 dark:text-indigo-300 hover:underline flex-shrink-0"
+              >
+                Deteksi Ulang Otomatis
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Error Alert Banner */}
         {cardError && (
@@ -564,9 +652,12 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                         {stdLevel.split('/')[0]}
                       </div>
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <span className="font-black text-sm text-slate-900 dark:text-white line-clamp-1">
                             {student.name}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
+                            Jenjang: {stdLevel}
                           </span>
                           {hasFace && (
                             <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
@@ -576,6 +667,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                         </div>
                         <div className="text-[11px] font-mono text-slate-500">
                           NISN: {student.nisn || student.nis} • Kelas: {cls?.name || '-'}
+                          {student.address ? ` • ${student.address}` : ''}
                         </div>
                       </div>
                     </div>

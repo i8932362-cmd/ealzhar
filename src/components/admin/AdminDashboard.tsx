@@ -38,6 +38,7 @@ import {
   TeacherAttendance,
   AttendanceSession,
   SessionTargetType,
+  EducationLevel,
 } from '../../types/index.ts';
 import { gasGet, gasPost, getWibTodayStr } from '../../lib/api.ts';
 import {
@@ -58,6 +59,32 @@ import {
 import { TableSkeleton } from '../common/Skeleton.tsx';
 import { ConfirmModal } from '../common/ConfirmModal.tsx';
 import { TimeInput24h } from '../common/TimeInput24h.tsx';
+import { CameraPreviewStage } from '../common/CameraPreviewStage.tsx';
+
+function normalizeEducationLevel(raw?: string): EducationLevel | '' {
+  const up = String(raw || '').toUpperCase().replace(/\s+/g, '');
+  if (!up) return '';
+  if (up === 'SD/MI' || up === 'SD' || up === 'MI' || up.startsWith('SD') || up.startsWith('MI')) return 'SD/MI';
+  if (up === 'SMP/MTS' || up === 'SMP' || up === 'MTS' || up.startsWith('SMP') || up.startsWith('MTS')) return 'SMP/MTS';
+  if (up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up === 'SMK' || up.startsWith('SMA') || up.startsWith('SMK') || up.startsWith('MA')) return 'SMA/MA';
+  return '';
+}
+
+function inferEducationLevel(rawLevel?: string, grade?: string | number, className?: string): EducationLevel {
+  const direct = normalizeEducationLevel(rawLevel);
+  if (direct) return direct;
+  const g = Number(String(grade || '').replace(/[^0-9]/g, ''));
+  if (!Number.isNaN(g) && g >= 1 && g <= 12) {
+    if (g <= 6) return 'SD/MI';
+    if (g <= 9) return 'SMP/MTS';
+    return 'SMA/MA';
+  }
+  const clsUp = String(className || '').toUpperCase().trim();
+  if (/\b(SMA|SMK|MA|XII|XI|X|12|11|10)\b/.test(clsUp)) return 'SMA/MA';
+  if (/\b(SMP|MTS|IX|VIII|VII|9|8|7)\b/.test(clsUp)) return 'SMP/MTS';
+  if (/\b(SD|MI|VI|V|IV|III|II|I|6|5|4|3|2|1)\b/.test(clsUp)) return 'SD/MI';
+  return 'SMA/MA';
+}
 import { PasswordInput } from '../common/PasswordInput.tsx';
 import { StudentCardManager } from './StudentCardManager.tsx';
 
@@ -154,29 +181,76 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Download Student & Teacher Template (.xlsx)
-  const handleDownloadTemplate = () => {
-    // Student template sheet
-    const studentSample = [
-      {
-        nis: '10202610',
-        nisn: '0071234580',
-        nama: 'Ahmad Zaki Fauzan',
-        jenisKelamin: 'L',
-        classId: classes[0]?.id || 'cls-10-rpl-1',
-        barcodeCard: 'CARD-10202610',
-        noHpOrtu: '081234567890',
-      },
-      {
-        nis: '10202611',
-        nisn: '0071234581',
-        nama: 'Nabila Putri Cahyani',
-        jenisKelamin: 'P',
-        classId: classes[0]?.id || 'cls-10-rpl-1',
-        barcodeCard: 'CARD-10202611',
-        noHpOrtu: '081234567891',
-      },
-    ];
+  // Download Student & Teacher Template (.xlsx) tailored to chosen Jenjang
+  const handleDownloadTemplate = (preferredLevel?: EducationLevel) => {
+    const fallbackClassFor = (lvl: EducationLevel, idx: number) => {
+      const match = classes.find(c => inferEducationLevel(c.level, c.grade, c.name) === lvl);
+      if (match) return match.name;
+      if (lvl === 'SD/MI') return idx === 0 ? 'IV SD A' : 'V SD B';
+      if (lvl === 'SMP/MTS') return idx === 0 ? 'VII SMP A' : 'VIII SMP B';
+      return idx === 0 ? 'X SMA A' : 'XI SMA B';
+    };
+
+    const studentSample = preferredLevel
+      ? [
+          {
+            nis: '10202610',
+            nisn: '0071234580',
+            nama: 'Ahmad Zaki Fauzan',
+            jenisKelamin: 'L',
+            jenjang: preferredLevel,
+            kelas: fallbackClassFor(preferredLevel, 0),
+            alamat: 'Jl. Pesantren No. 12, Diwek, Jombang',
+            barcodeCard: 'CARD-10202610',
+            noHpOrtu: '081234567890',
+          },
+          {
+            nis: '10202611',
+            nisn: '0071234581',
+            nama: 'Nabila Putri Cahyani',
+            jenisKelamin: 'P',
+            jenjang: preferredLevel,
+            kelas: fallbackClassFor(preferredLevel, 1),
+            alamat: 'Dusun Krajan RT 02/RW 01, Peterongan, Jombang',
+            barcodeCard: 'CARD-10202611',
+            noHpOrtu: '081234567891',
+          },
+        ]
+      : [
+          {
+            nis: '10202610',
+            nisn: '0071234580',
+            nama: 'Ahmad Zaki Fauzan',
+            jenisKelamin: 'L',
+            jenjang: 'SMA/MA',
+            kelas: fallbackClassFor('SMA/MA', 0),
+            alamat: 'Jl. Pesantren No. 12, Diwek, Jombang',
+            barcodeCard: 'CARD-10202610',
+            noHpOrtu: '081234567890',
+          },
+          {
+            nis: '10202611',
+            nisn: '0071234581',
+            nama: 'Nabila Putri Cahyani',
+            jenisKelamin: 'P',
+            jenjang: 'SMP/MTS',
+            kelas: fallbackClassFor('SMP/MTS', 0),
+            alamat: 'Dusun Krajan RT 02/RW 01, Peterongan, Jombang',
+            barcodeCard: 'CARD-10202611',
+            noHpOrtu: '081234567891',
+          },
+          {
+            nis: '10202612',
+            nisn: '0071234582',
+            nama: 'Muhammad Farhan',
+            jenisKelamin: 'L',
+            jenjang: 'SD/MI',
+            kelas: fallbackClassFor('SD/MI', 0),
+            alamat: 'Jl. Merdeka No. 8, Mojoagung, Jombang',
+            barcodeCard: 'CARD-10202612',
+            noHpOrtu: '081234567892',
+          },
+        ];
 
     const teacherSample = [
       {
@@ -194,7 +268,8 @@ export const AdminDashboard: React.FC = () => {
 
     XLSX.utils.book_append_sheet(wb, wsStudents, 'Template_Siswa');
     XLSX.utils.book_append_sheet(wb, wsTeachers, 'Template_Guru');
-    XLSX.writeFile(wb, 'Template_Import_Presensi_Sekolah.xlsx');
+    const levelSlug = preferredLevel ? `_${preferredLevel.replace('/', '_')}` : '';
+    XLSX.writeFile(wb, `Template_Import_Siswa${levelSlug}.xlsx`);
   };
 
   return (
@@ -1184,6 +1259,7 @@ const FaceDatabaseSection: React.FC<{
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [mirrorPreview, setMirrorPreview] = useState<boolean>(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const photoUploadRef = useRef<HTMLInputElement | null>(null);
@@ -1248,6 +1324,7 @@ const FaceDatabaseSection: React.FC<{
   const switchCamera = () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(nextMode);
+    setMirrorPreview(nextMode === 'user');
     if (isCameraActive) {
       startCamera(nextMode);
     }
@@ -1512,14 +1589,16 @@ const FaceDatabaseSection: React.FC<{
           </div>
 
           {/* Camera preview */}
-          <div className="relative rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 min-h-[260px] flex items-center justify-center">
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              style={{ transform: 'none' }}
-              className={`w-full max-w-sm rounded-xl ${isCameraActive ? 'block' : 'hidden'}`}
-            />
+          <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 min-h-[340px] flex items-center justify-center">
+            {isCameraActive && (
+              <CameraPreviewStage
+                videoRef={videoRef}
+                isActive={isCameraActive}
+                showGuideFrame
+                mirrorPreview={mirrorPreview}
+                maxHeightClass="h-[50dvh] min-h-[340px] max-h-[540px] sm:h-[440px]"
+              />
+            )}
             {!isCameraActive && (
               <div className="text-center p-6 space-y-3">
                 <Camera className="w-10 h-10 text-slate-500 mx-auto" />
@@ -1575,6 +1654,14 @@ const FaceDatabaseSection: React.FC<{
                     <span>Ambil Foto & Simpan Vektor</span>
                   </>
                 )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMirrorPreview(v => !v)}
+                className="px-3.5 py-3 text-xs font-semibold rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
+                title="Sesuaikan orientasi preview tanpa mengubah gambar asli AI"
+              >
+                {mirrorPreview ? 'Orientasi: Kanan=Kanan' : 'Orientasi: Sensor Asli'}
               </button>
               <button
                 type="button"
@@ -2751,6 +2838,7 @@ const ClassesSection: React.FC<{
   const [showPromoteModal, setShowPromoteModal] = useState(false);
   const [className, setClassName] = useState('');
   const [grade, setGrade] = useState('10');
+  const [level, setLevel] = useState<EducationLevel>('SMA/MA');
   const [homeRoomTeacherId, setHomeRoomTeacherId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isPromoting, setIsPromoting] = useState(false);
@@ -2774,6 +2862,7 @@ const ClassesSection: React.FC<{
     setEditingClass(null);
     setClassName('');
     setGrade('10');
+    setLevel('SMA/MA');
     setHomeRoomTeacherId('');
     setShowModal(true);
   };
@@ -2782,7 +2871,9 @@ const ClassesSection: React.FC<{
     setFeedback(null);
     setEditingClass(cls);
     setClassName(cls.name || '');
-    setGrade(String(cls.grade || '10'));
+    const gStr = String(cls.grade || '10');
+    setGrade(gStr);
+    setLevel(inferEducationLevel(cls.level, gStr, cls.name));
     setHomeRoomTeacherId(cls.homeRoomTeacherId || '');
     setShowModal(true);
   };
@@ -2796,6 +2887,7 @@ const ClassesSection: React.FC<{
       const payload = {
         name: className.trim(),
         grade,
+        level,
         homeRoomTeacherId,
       };
       const res = editingClass
@@ -2907,17 +2999,24 @@ const ClassesSection: React.FC<{
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {classes.map(c => (
-          <div
-            key={c.id}
-            className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-black text-sm text-slate-900 dark:text-white">{c.name}</span>
-              <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold text-[10px]">
-                Tingkat {c.grade}
-              </span>
-            </div>
+        {classes.map(c => {
+          const clsLevel = inferEducationLevel(c.level, c.grade, c.name);
+          return (
+            <div
+              key={c.id}
+              className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-black text-sm text-slate-900 dark:text-white">{c.name}</span>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 font-bold text-[10px]">
+                    {clsLevel}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold text-[10px]">
+                    Tingkat {c.grade}
+                  </span>
+                </div>
+              </div>
             <div className="text-slate-500 text-[11px]">
               Wali: {c.homeRoomTeacherName || 'Belum ada'}
             </div>
@@ -2942,8 +3041,9 @@ const ClassesSection: React.FC<{
                 <span>Hapus</span>
               </button>
             </div>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
 
       <ConfirmModal
@@ -2995,26 +3095,45 @@ const ClassesSection: React.FC<{
                 />
               </div>
 
-              <div>
-                <label className="block font-semibold mb-1">Tingkat</label>
-                <select
-                  value={grade}
-                  onChange={e => setGrade(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                >
-                  <option value="1">Kelas 1 (SD/MI)</option>
-                  <option value="2">Kelas 2 (SD/MI)</option>
-                  <option value="3">Kelas 3 (SD/MI)</option>
-                  <option value="4">Kelas 4 (SD/MI)</option>
-                  <option value="5">Kelas 5 (SD/MI)</option>
-                  <option value="6">Kelas 6 (SD/MI)</option>
-                  <option value="7">Kelas 7 (SMP/MTS)</option>
-                  <option value="8">Kelas 8 (SMP/MTS)</option>
-                  <option value="9">Kelas 9 (SMP/MTS)</option>
-                  <option value="10">Kelas 10 (SMA/MA)</option>
-                  <option value="11">Kelas 11 (SMA/MA)</option>
-                  <option value="12">Kelas 12 (SMA/MA)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-semibold mb-1">Tingkat</label>
+                  <select
+                    value={grade}
+                    onChange={e => {
+                      const nextG = e.target.value;
+                      setGrade(nextG);
+                      setLevel(inferEducationLevel('', nextG, className));
+                    }}
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  >
+                    <option value="1">Kelas 1 (SD/MI)</option>
+                    <option value="2">Kelas 2 (SD/MI)</option>
+                    <option value="3">Kelas 3 (SD/MI)</option>
+                    <option value="4">Kelas 4 (SD/MI)</option>
+                    <option value="5">Kelas 5 (SD/MI)</option>
+                    <option value="6">Kelas 6 (SD/MI)</option>
+                    <option value="7">Kelas 7 (SMP/MTS)</option>
+                    <option value="8">Kelas 8 (SMP/MTS)</option>
+                    <option value="9">Kelas 9 (SMP/MTS)</option>
+                    <option value="10">Kelas 10 (SMA/MA)</option>
+                    <option value="11">Kelas 11 (SMA/MA)</option>
+                    <option value="12">Kelas 12 (SMA/MA)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold mb-1">Jenjang</label>
+                  <select
+                    value={level}
+                    onChange={e => setLevel(e.target.value as EducationLevel)}
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  >
+                    <option value="SD/MI">SD/MI</option>
+                    <option value="SMP/MTS">SMP/MTS</option>
+                    <option value="SMA/MA">SMA/MA</option>
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -3166,6 +3285,7 @@ const StudentsSection: React.FC<{
   onSavedToast?: (msg: string) => void;
 }> = ({ students, classes, onRefresh, onSavedToast }) => {
   const [search, setSearch] = useState('');
+  const [filterLevel, setFilterLevel] = useState<'ALL' | EducationLevel>('ALL');
   const [showModal, setShowModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [name, setName] = useState('');
@@ -3173,6 +3293,8 @@ const StudentsSection: React.FC<{
   const [nisn, setNisn] = useState('');
   const [gender, setGender] = useState<'L' | 'P'>('L');
   const [classId, setClassId] = useState(classes[0]?.id || '');
+  const [level, setLevel] = useState<EducationLevel>('SMA/MA');
+  const [address, setAddress] = useState('');
   const [barcodeCard, setBarcodeCard] = useState('');
   const [parentPhone, setParentPhone] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -3186,14 +3308,22 @@ const StudentsSection: React.FC<{
     }
   }, [classes, classId]);
 
+  const resolveStudentLevel = (st: Student): EducationLevel => {
+    const cls = classes.find(c => c.id === st.classId);
+    return inferEducationLevel(st.level || cls?.level, cls?.grade, cls?.name);
+  };
+
   const openAddModal = () => {
+    const firstCls = classes[0];
     setFeedback(null);
     setEditingStudent(null);
     setName('');
     setNis('');
     setNisn('');
     setGender('L');
-    setClassId(classes[0]?.id || '');
+    setClassId(firstCls?.id || '');
+    setLevel(inferEducationLevel(firstCls?.level, firstCls?.grade, firstCls?.name));
+    setAddress('');
     setBarcodeCard('');
     setParentPhone('');
     setShowModal(true);
@@ -3207,6 +3337,8 @@ const StudentsSection: React.FC<{
     setNisn(st.nisn || '');
     setGender((st.gender || 'L') as 'L' | 'P');
     setClassId(st.classId || classes[0]?.id || '');
+    setLevel(resolveStudentLevel(st));
+    setAddress(st.address || '');
     setBarcodeCard(st.barcodeCard || '');
     setParentPhone(st.parentPhone || '');
     setShowModal(true);
@@ -3225,6 +3357,8 @@ const StudentsSection: React.FC<{
         nisn: nisn.trim(),
         gender,
         classId,
+        level,
+        address: address.trim(),
         barcodeCard: barcodeCard.trim() || `CARD-${trimmedNis}`,
         parentPhone: parentPhone.trim(),
       };
@@ -3242,13 +3376,14 @@ const StudentsSection: React.FC<{
       if (res.success) {
         await onRefresh();
         const msg = editingStudent
-          ? `Perubahan data siswa "${payload.name}" tersimpan.`
-          : `Data siswa baru "${payload.name}" berhasil ditambahkan.`;
+          ? `Perubahan data siswa "${payload.name}" (${payload.level}) tersimpan.`
+          : `Data siswa baru "${payload.name}" (${payload.level}) berhasil ditambahkan.`;
         setShowModal(false);
         setEditingStudent(null);
         setName('');
         setNis('');
         setNisn('');
+        setAddress('');
         setBarcodeCard('');
         setParentPhone('');
         setFeedback({ type: 'success', text: msg });
@@ -3263,24 +3398,40 @@ const StudentsSection: React.FC<{
     }
   };
 
-  const filtered = students.filter(
-    s => s.name.toLowerCase().includes(search.toLowerCase()) || s.nis.includes(search)
-  );
+  const filtered = students.filter(s => {
+    if (filterLevel !== 'ALL' && resolveStudentLevel(s) !== filterLevel) return false;
+    const q = search.toLowerCase();
+    return (
+      s.name.toLowerCase().includes(q) ||
+      s.nis.includes(search) ||
+      (s.address || '').toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h3 className="text-base font-bold text-slate-900 dark:text-white">Database Siswa ({students.length})</h3>
-          <p className="text-xs text-slate-500">Kelola data induk siswa, barcode kartu, dan nomor kontak orang tua</p>
+          <h3 className="text-base font-bold text-slate-900 dark:text-white">Database Siswa ({filtered.length} / {students.length})</h3>
+          <p className="text-xs text-slate-500">Kelola &amp; edit data masing-masing siswa, jenjang pendidikan, alamat, barcode kartu, dan kontak wali</p>
         </div>
-        <div className="flex gap-3 w-full sm:w-auto">
+        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <select
+            value={filterLevel}
+            onChange={e => setFilterLevel(e.target.value as any)}
+            className="px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+          >
+            <option value="ALL">Semua Jenjang</option>
+            <option value="SD/MI">SD/MI</option>
+            <option value="SMP/MTS">SMP/MTS</option>
+            <option value="SMA/MA">SMA/MA</option>
+          </select>
           <input
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Cari siswa atau NIS..."
-            className="px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+            placeholder="Cari siswa, NIS, atau alamat..."
+            className="px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl flex-1 sm:flex-initial"
           />
           <button
             onClick={openAddModal}
@@ -3320,51 +3471,64 @@ const StudentsSection: React.FC<{
             <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-semibold">
               <th className="py-3 px-3">NIS</th>
               <th className="py-3 px-3">Nama Siswa</th>
+              <th className="py-3 px-3">Jenjang</th>
               <th className="py-3 px-3">Kelas</th>
+              <th className="py-3 px-3">Alamat</th>
               <th className="py-3 px-3">Kode Barcode/RFID</th>
               <th className="py-3 px-3">Wajah</th>
               <th className="py-3 px-3 text-right">Aksi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-            {filtered.map(s => (
-              <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                <td className="py-3 px-3 font-mono">{s.nis}</td>
-                <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">{s.name}</td>
-                <td className="py-3 px-3 text-slate-500">{classes.find(c => c.id === s.classId)?.name || '-'}</td>
-                <td className="py-3 px-3 font-mono text-[11px] text-blue-600">{s.barcodeCard}</td>
-                <td className="py-3 px-3">
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                      s.hasFaceEnrolled
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800'
-                    }`}
-                  >
-                    {s.hasFaceEnrolled ? 'Terdaftar' : 'Belum'}
-                  </span>
-                </td>
-                <td className="py-3 px-3 text-right whitespace-nowrap space-x-1">
-                  <button
-                    type="button"
-                    onClick={() => openEditModal(s)}
-                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40 rounded-lg transition"
-                    title="Edit data siswa"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                    <span>Edit</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteTarget(s)}
-                    className="p-1 text-slate-400 hover:text-red-600 transition align-middle"
-                    title="Hapus siswa"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {filtered.map(s => {
+              const stdLevel = resolveStudentLevel(s);
+              return (
+                <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <td className="py-3 px-3 font-mono">{s.nis}</td>
+                  <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">{s.name}</td>
+                  <td className="py-3 px-3">
+                    <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 font-bold text-[10px]">
+                      {stdLevel}
+                    </span>
+                  </td>
+                  <td className="py-3 px-3 text-slate-500">{classes.find(c => c.id === s.classId)?.name || '-'}</td>
+                  <td className="py-3 px-3 text-slate-500 max-w-[180px] truncate" title={s.address || '-'}>
+                    {s.address || '-'}
+                  </td>
+                  <td className="py-3 px-3 font-mono text-[11px] text-blue-600">{s.barcodeCard}</td>
+                  <td className="py-3 px-3">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                        s.hasFaceEnrolled
+                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : 'bg-slate-100 text-slate-500 dark:bg-slate-800'
+                      }`}
+                    >
+                      {s.hasFaceEnrolled ? 'Terdaftar' : 'Belum'}
+                    </span>
+                  </td>
+                  <td className="py-3 px-3 text-right whitespace-nowrap space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(s)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40 rounded-lg transition"
+                      title="Edit data siswa"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      <span>Edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(s)}
+                      className="p-1 text-slate-400 hover:text-red-600 transition align-middle"
+                      title="Hapus siswa"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -3452,19 +3616,50 @@ const StudentsSection: React.FC<{
                   </select>
                 </div>
                 <div>
-                  <label className="block font-semibold mb-1">Kelas</label>
+                  <label className="block font-semibold mb-1">Jenjang Pendidikan</label>
                   <select
-                    value={classId}
-                    onChange={e => setClassId(e.target.value)}
+                    value={level}
+                    onChange={e => setLevel(e.target.value as EducationLevel)}
                     className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   >
-                    {classes.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
+                    <option value="SD/MI">SD/MI</option>
+                    <option value="SMP/MTS">SMP/MTS</option>
+                    <option value="SMA/MA">SMA/MA</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Kelas</label>
+                <select
+                  value={classId}
+                  onChange={e => {
+                    const nextId = e.target.value;
+                    setClassId(nextId);
+                    const pickedCls = classes.find(c => c.id === nextId);
+                    if (pickedCls) {
+                      setLevel(inferEducationLevel(pickedCls.level, pickedCls.grade, pickedCls.name));
+                    }
+                  }}
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                >
+                  {classes.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({inferEducationLevel(c.level, c.grade, c.name)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Alamat Lengkap</label>
+                <textarea
+                  rows={2}
+                  value={address}
+                  onChange={e => setAddress(e.target.value)}
+                  placeholder="Contoh: Jl. Pesantren No. 12, Diwek, Jombang"
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
               </div>
 
               <div>
@@ -3530,10 +3725,12 @@ const StudentsSection: React.FC<{
 // Bulk Upload Section (Excel/CSV Parser & Preview)
 const BulkUploadSection: React.FC<{
   classes: SchoolClass[];
-  onDownloadTemplate: () => void;
+  onDownloadTemplate: (preferredLevel?: EducationLevel) => void;
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
 }> = ({ classes, onDownloadTemplate, onRefresh, onSavedToast }) => {
+  const [selectedLevel, setSelectedLevel] = useState<EducationLevel>('SMA/MA');
+  const [forceSelectedLevel, setForceSelectedLevel] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState(classes[0]?.id || '');
   const [parsedRows, setParsedRows] = useState<any[]>([]);
   const [errorReport, setErrorReport] = useState<any[]>([]);
@@ -3541,11 +3738,16 @@ const BulkUploadSection: React.FC<{
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  const classesForSelectedLevel = classes.filter(
+    c => inferEducationLevel(c.level, c.grade, c.name) === selectedLevel
+  );
+
   useEffect(() => {
-    if (!selectedClassId && classes.length > 0) {
-      setSelectedClassId(classes[0].id);
+    const pool = classesForSelectedLevel.length > 0 ? classesForSelectedLevel : classes;
+    if (pool.length > 0 && !pool.some(c => c.id === selectedClassId)) {
+      setSelectedClassId(pool[0].id);
     }
-  }, [classes, selectedClassId]);
+  }, [classes, selectedLevel]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -3582,12 +3784,16 @@ const BulkUploadSection: React.FC<{
     try {
       const res = await gasPost<{
         importedCount: number;
+        createdClassesCount?: number;
+        createdClassNames?: string[];
         errorCount: number;
         errorRows: any[];
         message: string;
       }>('bulkImportStudents', {
         rows: parsedRows,
         classId: selectedClassId,
+        defaultLevel: selectedLevel,
+        forceDefaultLevel: forceSelectedLevel,
       });
 
       if (res.success) {
@@ -3612,17 +3818,71 @@ const BulkUploadSection: React.FC<{
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white">Upload Massal Data Siswa (Excel/CSV)</h3>
           <p className="text-xs text-slate-500">
-            Validasi format, deteksi duplikasi NIS/NISN, dan pratinjau tabel sebelum disimpan
+            Pilih jenjang terlebih dahulu lalu unduh template sesuai jenjang (berisi kolom jenjang, kelas, dan alamat). Kelas yang belum ada dibuat otomatis &amp; data dipisahkan ke sheet per jenjang.
           </p>
         </div>
 
         <button
-          onClick={onDownloadTemplate}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition"
+          onClick={() => onDownloadTemplate(selectedLevel)}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition flex-shrink-0"
         >
           <Download className="w-4 h-4" />
-          <span>Unduh Template Excel (.xlsx)</span>
+          <span>Unduh Template {selectedLevel} (.xlsx)</span>
         </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <div className="space-y-2">
+          <label className="block font-bold text-slate-700 dark:text-slate-300">
+            1. Pilih Jenjang Upload Massal Terlebih Dahulu
+          </label>
+          <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+            {(['SD/MI', 'SMP/MTS', 'SMA/MA'] as EducationLevel[]).map(lvl => (
+              <button
+                key={lvl}
+                type="button"
+                onClick={() => setSelectedLevel(lvl)}
+                className={`py-2 rounded-lg font-bold transition ${
+                  selectedLevel === lvl
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                }`}
+              >
+                {lvl}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-[11px] font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={forceSelectedLevel}
+              onChange={e => setForceSelectedLevel(e.target.checked)}
+              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>Terapkan jenjang <strong>{selectedLevel}</strong> ke seluruh baris yang diunggah</span>
+          </label>
+        </div>
+
+        <div>
+          <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+            2. Kelas Default (Jika kolom kelas pada Excel kosong)
+          </label>
+          <select
+            value={selectedClassId}
+            onChange={e => setSelectedClassId(e.target.value)}
+            className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+          >
+            {(classesForSelectedLevel.length > 0 ? classesForSelectedLevel : classes).map(c => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({inferEducationLevel(c.level, c.grade, c.name)})
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900 text-[11px] text-blue-800 dark:text-blue-200">
+        Kolom <span className="font-mono font-bold">kelas</span> di Excel yang belum terdaftar akan <strong>otomatis dibuat</strong> pada menu Kelas &amp; Naik Kelas, dan siswa otomatis disinkronkan ke sheet <span className="font-mono font-bold">Siswa_SD_MI</span>, <span className="font-mono font-bold">Siswa_SMP_MTS</span>, dan <span className="font-mono font-bold">Siswa_SMA_MA</span>.
       </div>
 
       <div className="p-6 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 text-center space-y-3 bg-slate-50/50 dark:bg-slate-800/20">
@@ -3702,19 +3962,35 @@ const BulkUploadSection: React.FC<{
                 <tr>
                   <th className="p-2.5">NIS</th>
                   <th className="p-2.5">Nama</th>
+                  <th className="p-2.5">Jenjang</th>
+                  <th className="p-2.5">Kelas</th>
                   <th className="p-2.5">L/P</th>
+                  <th className="p-2.5">Alamat</th>
                   <th className="p-2.5">No HP Ortu</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {parsedRows.slice(0, 10).map((r, i) => (
-                  <tr key={i}>
-                    <td className="p-2.5 font-mono">{r.nis}</td>
-                    <td className="p-2.5 font-bold">{r.nama || r.name}</td>
-                    <td className="p-2.5">{r.gender || r.jenisKelamin || 'L'}</td>
-                    <td className="p-2.5">{r.parentPhone || r.noHpOrtu || '-'}</td>
-                  </tr>
-                ))}
+                {parsedRows.slice(0, 15).map((r, i) => {
+                  const rowCls = r.kelas || r.className || r.class || r.Kelas || '';
+                  const rowLvl = forceSelectedLevel
+                    ? selectedLevel
+                    : inferEducationLevel(r.jenjang || r.level || r.Jenjang || selectedLevel, r.tingkat || r.grade, rowCls);
+                  return (
+                    <tr key={i}>
+                      <td className="p-2.5 font-mono">{r.nis || r.NIS}</td>
+                      <td className="p-2.5 font-bold">{r.nama || r.name || r.Nama}</td>
+                      <td className="p-2.5">
+                        <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 font-bold text-[10px]">
+                          {rowLvl}
+                        </span>
+                      </td>
+                      <td className="p-2.5">{rowCls || classes.find(c => c.id === (r.classId || selectedClassId))?.name || '-'}</td>
+                      <td className="p-2.5">{r.gender || r.jenisKelamin || 'L'}</td>
+                      <td className="p-2.5 max-w-[180px] truncate">{r.alamat || r.address || r.Alamat || '-'}</td>
+                      <td className="p-2.5">{r.parentPhone || r.noHpOrtu || '-'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

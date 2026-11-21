@@ -26,6 +26,7 @@ import { useSync } from '../../context/SyncContext.tsx';
 import { TeacherAttendance, SchoolLocation, Teacher } from '../../types/index.ts';
 import { gasGet, gasPost, getWibTodayStr } from '../../lib/api.ts';
 import { formatWibTime24, getNextUpcomingSessionForType, sortSessions } from '../../lib/sessions.ts';
+import { CameraPreviewStage } from '../common/CameraPreviewStage.tsx';
 import {
   loadFaceDetectionModels,
   areFaceModelsLoaded,
@@ -124,6 +125,9 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     areFaceModelsLoaded() ? 'ready' : 'idle'
   );
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [mirrorPreview, setMirrorPreview] = useState<boolean>(true);
+  const mirrorPreviewRef = useRef<boolean>(true);
+  mirrorPreviewRef.current = mirrorPreview;
   const [cameraError, setCameraError] = useState<{ title: string; message: string } | null>(null);
   const [matchedTeacherInFrame, setMatchedTeacherInFrame] = useState<{ name: string; nip: string } | null>(null);
   const [hasFaceInFrame, setHasFaceInFrame] = useState<boolean>(false);
@@ -578,35 +582,40 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
                   detections.forEach((det) => {
                     const { box } = det;
+                    const drawX = mirrorPreviewRef.current
+                      ? Math.max(0, canvas.width - (box.x + box.width))
+                      : box.x;
                     const color = isMatched ? '#10b981' : '#f59e0b';
                     ctx.lineWidth = 3;
                     ctx.strokeStyle = color;
-                    ctx.strokeRect(box.x, box.y, box.width, box.height);
+                    ctx.strokeRect(drawX, box.y, box.width, box.height);
 
                     // Corner accents matching biometric frame
                     const corner = Math.min(20, box.width * 0.22, box.height * 0.22);
                     ctx.lineWidth = 5;
                     ctx.beginPath();
-                    ctx.moveTo(box.x, box.y + corner);
-                    ctx.lineTo(box.x, box.y);
-                    ctx.lineTo(box.x + corner, box.y);
-                    ctx.moveTo(box.x + box.width - corner, box.y);
-                    ctx.lineTo(box.x + box.width, box.y);
-                    ctx.lineTo(box.x + box.width, box.y + corner);
-                    ctx.moveTo(box.x, box.y + box.height - corner);
-                    ctx.lineTo(box.x, box.y + box.height);
-                    ctx.lineTo(box.x + corner, box.y + box.height);
-                    ctx.moveTo(box.x + box.width - corner, box.y + box.height);
-                    ctx.lineTo(box.x + box.width, box.y + box.height);
-                    ctx.lineTo(box.x + box.width, box.y + box.height - corner);
+                    ctx.moveTo(drawX, box.y + corner);
+                    ctx.lineTo(drawX, box.y);
+                    ctx.lineTo(drawX + corner, box.y);
+                    ctx.moveTo(drawX + box.width - corner, box.y);
+                    ctx.lineTo(drawX + box.width, box.y);
+                    ctx.lineTo(drawX + box.width, box.y + corner);
+                    ctx.moveTo(drawX, box.y + box.height - corner);
+                    ctx.lineTo(drawX, box.y + box.height);
+                    ctx.lineTo(drawX + corner, box.y + box.height);
+                    ctx.moveTo(drawX + box.width - corner, box.y + box.height);
+                    ctx.lineTo(drawX + box.width, box.y + box.height);
+                    ctx.lineTo(drawX + box.width, box.y + box.height - corner);
                     ctx.stroke();
 
                     ctx.font = 'bold 14px Inter, sans-serif';
                     const textWidth = ctx.measureText(label).width;
+                    const pillW = textWidth + 16;
+                    const pillX = Math.max(4, Math.min(canvas.width - pillW - 4, drawX));
                     ctx.fillStyle = color;
-                    ctx.fillRect(box.x, box.y > 30 ? box.y - 30 : box.y, textWidth + 16, 28);
+                    ctx.fillRect(pillX, box.y > 30 ? box.y - 30 : box.y, pillW, 28);
                     ctx.fillStyle = '#ffffff';
-                    ctx.fillText(label, box.x + 8, box.y > 30 ? box.y - 11 : box.y + 19);
+                    ctx.fillText(label, pillX + 8, box.y > 30 ? box.y - 11 : box.y + 19);
                   });
 
                   if (isMatched && matchedObj) {
@@ -664,6 +673,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   const startCamera = async (modeOverride?: 'user' | 'environment') => {
     const targetMode = modeOverride || facingMode;
     setCameraError(null);
+    setIsCameraActive(true);
     setIsRequestingCamera(true);
     autoTriggeredSessionRef.current = null;
     consecutiveMatchRef.current = { personId: '', count: 0 };
@@ -729,6 +739,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   const switchCamera = () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(nextMode);
+    setMirrorPreview(nextMode === 'user');
     if (isCameraActive) {
       void startCamera(nextMode);
     }
@@ -1008,59 +1019,46 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
               )}
             </div>
 
-            <div
-              className={`relative w-full max-w-md mx-auto rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 ${
-                isCameraActive ? 'block' : 'hidden'
-              }`}
-              style={{ aspectRatio: String(videoAspect || 4 / 3) }}
-            >
-              <video
-                ref={videoRef}
-                playsInline
-                autoPlay
-                muted
-                onLoadedMetadata={(e) => {
-                  const v = e.currentTarget;
-                  if (v.videoWidth > 0 && v.videoHeight > 0) {
-                    setVideoAspect(v.videoWidth / v.videoHeight);
-                  }
-                }}
-                style={{ transform: 'none' }}
-                className="w-full h-full object-contain bg-slate-950"
-              />
-              <canvas
-                ref={canvasRef}
-                style={{ transform: 'none' }}
-                className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-              />
-
-              {matchedTeacherInFrame && (
-                <div className="absolute bottom-3 left-3 right-3 p-2.5 rounded-xl bg-emerald-600/95 backdrop-blur-md text-white text-left flex items-center justify-between gap-2 shadow-lg border border-emerald-300/50">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <UserCheck className="w-4 h-4 flex-shrink-0" />
-                    <div className="min-w-0">
-                      <div className="text-[10px] font-bold uppercase text-emerald-100">Wajah Cocok</div>
-                      <div className="text-xs font-black truncate">{matchedTeacherInFrame.name}</div>
+            {isCameraActive && (
+              <div className="relative w-full mx-auto rounded-2xl overflow-hidden bg-slate-950 border border-slate-800">
+                <CameraPreviewStage
+                  videoRef={videoRef}
+                  canvasRef={canvasRef}
+                  isActive={isCameraActive}
+                  showGuideFrame
+                  mirrorPreview={mirrorPreview}
+                  maxHeightClass="h-[52dvh] min-h-[340px] max-h-[580px] sm:h-[460px] lg:h-[520px]"
+                  onVideoDimensions={(w, h) => setVideoAspect(w / h)}
+                >
+                  {matchedTeacherInFrame && (
+                    <div className="absolute bottom-3 left-3 right-3 p-2.5 rounded-xl bg-emerald-600/95 backdrop-blur-md text-white text-left flex items-center justify-between gap-2 shadow-lg border border-emerald-300/50">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <UserCheck className="w-4 h-4 flex-shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-bold uppercase text-emerald-100">Wajah Cocok</div>
+                          <div className="text-xs font-black truncate">{matchedTeacherInFrame.name}</div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-white/20 flex-shrink-0">
+                        {isSubmitting
+                          ? 'Menyimpan...'
+                          : activeAutoSession === 'checkIn'
+                          ? 'Auto Masuk'
+                          : activeAutoSession === 'checkOut'
+                          ? 'Auto Pulang'
+                          : 'Terverifikasi'}
+                      </span>
                     </div>
-                  </div>
-                  <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-white/20 flex-shrink-0">
-                    {isSubmitting
-                      ? 'Menyimpan...'
-                      : activeAutoSession === 'checkIn'
-                      ? 'Auto Masuk'
-                      : activeAutoSession === 'checkOut'
-                      ? 'Auto Pulang'
-                      : 'Terverifikasi'}
-                  </span>
-                </div>
-              )}
+                  )}
 
-              {hasFaceInFrame && !matchedTeacherInFrame && (
-                <div className="absolute bottom-3 left-3 right-3 px-3 py-1.5 rounded-xl bg-amber-500/90 text-white text-[11px] font-bold">
-                  Wajah terdeteksi — tidak cocok dengan database wajah guru
-                </div>
-              )}
-            </div>
+                  {hasFaceInFrame && !matchedTeacherInFrame && (
+                    <div className="absolute bottom-3 left-3 right-3 px-3 py-1.5 rounded-xl bg-amber-500/90 text-white text-[11px] font-bold">
+                      Wajah terdeteksi — tidak cocok dengan database wajah guru
+                    </div>
+                  )}
+                </CameraPreviewStage>
+              </div>
+            )}
 
             {!isCameraActive && (
               <div className="space-y-4 max-w-sm py-4">
@@ -1074,7 +1072,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                   <p className="text-xs text-slate-400">
                     {isRequestingCamera
                       ? 'Silakan klik "Izinkan / Allow" pada dialog browser untuk menyalakan kamera.'
-                      : 'Kamera mencocokkan wajah dengan database wajah guru (non-cermin) dan langsung memproses presensi sesuai sesi.'}
+                      : 'Kamera mencocokkan wajah dengan database wajah guru (kanan di kanan, kiri di kiri) dan langsung memproses presensi sesuai sesi.'}
                   </p>
                 </div>
 
@@ -1105,6 +1103,14 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                   />
                   {modelStatus === 'ready' ? 'AI Wajah Siap • Auto Presensi Aktif' : 'Menyiapkan AI...'}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => setMirrorPreview((v) => !v)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition border border-slate-700"
+                  title="Sesuaikan orientasi tampilan preview (AI tetap memakai gambar asli)"
+                >
+                  {mirrorPreview ? 'Orientasi: Kanan=Kanan' : 'Orientasi: Sensor Asli'}
+                </button>
                 <button
                   type="button"
                   onClick={switchCamera}

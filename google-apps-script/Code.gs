@@ -20,6 +20,8 @@ var PROP_DRIVE_FOLDER_ID = 'DRIVE_FOLDER_ID';
 var PROP_SECRET_TOKEN = 'SECRET_TOKEN';
 var PROP_DATA_VERSION = 'DATA_VERSION';
 var CACHE_PRESENCE_KEY = 'PRESENSI_ACTIVE_USERS_V1';
+var SCHEMA_BOOT_CACHE_PREFIX = 'SCHEMA_BOOT_V3_';
+var _EXEC_HEADER_CACHE = {};
 
 var SHEET_SCHEMAS = {
   Settings: [
@@ -93,11 +95,253 @@ var TEACHER_SESSION_ATT_HEADERS = [
   'createdAt', 'diubah_pada', 'updatedBy'
 ];
 
+var STUDENT_LEVEL_SHEETS = {
+  'SD/MI': 'Siswa_SD_MI',
+  'SMP/MTS': 'Siswa_SMP_MTS',
+  'SMA/MA': 'Siswa_SMA_MA'
+};
+
+var STUDENT_LEVEL_SHEET_HEADERS = [
+  'id', 'nis', 'nisn', 'name', 'gender', 'classId', 'className', 'level',
+  'address', 'parentPhone', 'barcodeCard', 'birthPlace', 'birthDate',
+  'isActive', 'status', 'createdAt', 'diubah_pada', 'updatedBy'
+];
+
+function normalizeEducationLevel_(rawLevel) {
+  var up = String(rawLevel || '').toUpperCase().replace(/\s+/g, '');
+  if (!up) return '';
+  if (up === 'SD/MI' || up === 'SD' || up === 'MI' || up.indexOf('SD') === 0 || up.indexOf('MI') === 0) {
+    return 'SD/MI';
+  }
+  if (up === 'SMP/MTS' || up === 'SMP' || up === 'MTS' || up.indexOf('SMP') === 0 || up.indexOf('MTS') === 0) {
+    return 'SMP/MTS';
+  }
+  if (up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up === 'SMK' || up.indexOf('SMA') === 0 || up.indexOf('SMK') === 0 || up.indexOf('MA') === 0) {
+    return 'SMA/MA';
+  }
+  return '';
+}
+
+function inferEducationLevel_(rawLevel, gradeStr, classNameStr) {
+  var direct = normalizeEducationLevel_(rawLevel);
+  if (direct) return direct;
+
+  var gradeNum = Number(String(gradeStr || '').replace(/[^0-9]/g, ''));
+  if (!isNaN(gradeNum) && gradeNum >= 1 && gradeNum <= 12) {
+    if (gradeNum <= 6) return 'SD/MI';
+    if (gradeNum <= 9) return 'SMP/MTS';
+    return 'SMA/MA';
+  }
+
+  var clsUp = String(classNameStr || '').toUpperCase().trim();
+  if (clsUp) {
+    if (/\b(SMA|SMK|MA|XII|XI|X|12|11|10)\b/.test(clsUp)) return 'SMA/MA';
+    if (/\b(SMP|MTS|IX|VIII|VII|9|8|7)\b/.test(clsUp)) return 'SMP/MTS';
+    if (/\b(SD|MI|VI|V|IV|III|II|I|6|5|4|3|2|1)\b/.test(clsUp)) return 'SD/MI';
+  }
+  return '';
+}
+
+function inferGradeNumber_(level, gradeStr, classNameStr) {
+  var explicitNum = Number(String(gradeStr || '').replace(/[^0-9]/g, ''));
+  if (!isNaN(explicitNum) && explicitNum >= 1 && explicitNum <= 12) {
+    return String(explicitNum);
+  }
+  var clsUp = String(classNameStr || '').toUpperCase().trim();
+  if (/\b(12|XII)\b/.test(clsUp)) return '12';
+  if (/\b(11|XI)\b/.test(clsUp)) return '11';
+  if (/\b(10|X)\b/.test(clsUp)) return '10';
+  if (/\b(9|IX)\b/.test(clsUp)) return '9';
+  if (/\b(8|VIII)\b/.test(clsUp)) return '8';
+  if (/\b(7|VII)\b/.test(clsUp)) return '7';
+  if (/\b(6|VI)\b/.test(clsUp)) return '6';
+  if (/\b(5|V)\b/.test(clsUp)) return '5';
+  if (/\b(4|IV)\b/.test(clsUp)) return '4';
+  if (/\b(3|III)\b/.test(clsUp)) return '3';
+  if (/\b(2|II)\b/.test(clsUp)) return '2';
+  if (/\b(1|I)\b/.test(clsUp)) return '1';
+  if (level === 'SD/MI') return '1';
+  if (level === 'SMP/MTS') return '7';
+  return '10';
+}
+
+function ensureStudentLevelSheetsExist_(ss) {
+  var levels = Object.keys(STUDENT_LEVEL_SHEETS);
+  var anyNewlyCreated = false;
+  for (var i = 0; i < levels.length; i++) {
+    var sheetName = STUDENT_LEVEL_SHEETS[levels[i]];
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.appendRow(STUDENT_LEVEL_SHEET_HEADERS);
+      sheet.getRange(1, 1, 1, STUDENT_LEVEL_SHEET_HEADERS.length).setFontWeight('bold');
+      applyTextFormatForNewSheet_(sheet, STUDENT_LEVEL_SHEET_HEADERS);
+      anyNewlyCreated = true;
+    } else if (sheet.getLastRow() === 0) {
+      sheet.appendRow(STUDENT_LEVEL_SHEET_HEADERS);
+      sheet.getRange(1, 1, 1, STUDENT_LEVEL_SHEET_HEADERS.length).setFontWeight('bold');
+      applyTextFormatForNewSheet_(sheet, STUDENT_LEVEL_SHEET_HEADERS);
+      anyNewlyCreated = true;
+    }
+  }
+  return anyNewlyCreated;
+}
+
+function buildStudentLevelRow_(st, classById) {
+  var cls = classById[String(st.classId)] || null;
+  var lvl = inferEducationLevel_(
+    st.level,
+    cls ? cls.grade : '',
+    cls ? cls.name : ''
+  );
+  if (!lvl && cls) {
+    lvl = inferEducationLevel_(cls.level, cls.grade, cls.name);
+  }
+  if (!lvl) lvl = 'SMA/MA';
+
+  return {
+    level: lvl,
+    row: [
+      String(st.id || ''),
+      String(st.nis || ''),
+      String(st.nisn || ''),
+      String(st.name || ''),
+      String(st.gender || 'L'),
+      String(st.classId || ''),
+      cls ? String(cls.name || '') : '',
+      lvl,
+      String(st.address || ''),
+      String(st.parentPhone || ''),
+      String(st.barcodeCard || ''),
+      String(st.birthPlace || ''),
+      String(st.birthDate || ''),
+      st.isActive === false ? false : true,
+      String(st.status || 'aktif'),
+      String(st.createdAt || ''),
+      String(st.diubah_pada || ''),
+      String(st.updatedBy || '')
+    ]
+  };
+}
+
+function syncSingleStudentInLevelSheets_(ss, studentOrId, isRemoved) {
+  ensureStudentLevelSheetsExist_(ss);
+
+  var targetId = typeof studentOrId === 'object' && studentOrId !== null
+    ? String(studentOrId.id || '')
+    : String(studentOrId || '');
+  if (!targetId) return;
+
+  var studentObj = null;
+  if (!isRemoved) {
+    if (typeof studentOrId === 'object' && studentOrId !== null && studentOrId.name) {
+      studentObj = studentOrId;
+    } else {
+      var stdSheet = ss.getSheetByName('Students');
+      if (stdSheet) {
+        var rIdx = findRowById_(stdSheet, targetId);
+        if (rIdx > 0) {
+          var hdrs = getHeaders_(stdSheet, 'Students');
+          var vals = stdSheet.getRange(rIdx, 1, 1, hdrs.length).getValues()[0];
+          var obj = {};
+          for (var c = 0; c < hdrs.length; c++) {
+            if (hdrs[c]) obj[hdrs[c]] = normalizeSheetCellValue_(hdrs[c], vals[c]);
+          }
+          if (String(obj.status || '').toLowerCase() !== 'dihapus') {
+            studentObj = obj;
+          }
+        }
+      }
+    }
+  }
+
+  var isActiveStudent = studentObj &&
+    !(studentObj.isActive === false || String(studentObj.isActive).toLowerCase() === 'false');
+
+  var targetLevel = '';
+  var builtRow = null;
+  if (isActiveStudent) {
+    var classById = {};
+    if (studentObj.classId) {
+      var classes = readActiveRows_(ss, 'Classes');
+      for (var c = 0; c < classes.length; c++) {
+        classById[String(classes[c].id)] = classes[c];
+      }
+    }
+    var built = buildStudentLevelRow_(studentObj, classById);
+    targetLevel = built.level;
+    builtRow = built.row;
+  }
+
+  var levels = Object.keys(STUDENT_LEVEL_SHEETS);
+  for (var k = 0; k < levels.length; k++) {
+    var levelKey = levels[k];
+    var sheetName = STUDENT_LEVEL_SHEETS[levelKey];
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) continue;
+
+    var existingRowIdx = findRowById_(sheet, targetId);
+    if (isActiveStudent && levelKey === targetLevel) {
+      if (existingRowIdx > 0) {
+        sheet.getRange(existingRowIdx, 1, 1, builtRow.length).setValues([builtRow]);
+      } else {
+        sheet.appendRow(builtRow);
+      }
+    } else if (existingRowIdx > 0) {
+      sheet.deleteRow(existingRowIdx);
+    }
+  }
+}
+
+function syncStudentLevelSheets_(ss) {
+  ensureStudentLevelSheetsExist_(ss);
+
+  var classes = readActiveRows_(ss, 'Classes');
+  var classById = {};
+  for (var c = 0; c < classes.length; c++) {
+    classById[String(classes[c].id)] = classes[c];
+  }
+
+  var students = readActiveRows_(ss, 'Students');
+  var grouped = {
+    'SD/MI': [],
+    'SMP/MTS': [],
+    'SMA/MA': []
+  };
+
+  for (var i = 0; i < students.length; i++) {
+    var st = students[i];
+    if (st.isActive === false || String(st.isActive).toLowerCase() === 'false') continue;
+    var built = buildStudentLevelRow_(st, classById);
+    grouped[built.level].push(built.row);
+  }
+
+  var levels = Object.keys(STUDENT_LEVEL_SHEETS);
+  for (var k = 0; k < levels.length; k++) {
+    var levelKey = levels[k];
+    var sheetName = STUDENT_LEVEL_SHEETS[levelKey];
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) continue;
+
+    var rowsForLevel = grouped[levelKey] || [];
+    var existingLastRow = sheet.getLastRow();
+    if (existingLastRow > 1) {
+      sheet.getRange(2, 1, existingLastRow - 1, STUDENT_LEVEL_SHEET_HEADERS.length).clearContent();
+    }
+    sheet.getRange(1, 1, 1, STUDENT_LEVEL_SHEET_HEADERS.length).setValues([STUDENT_LEVEL_SHEET_HEADERS]).setFontWeight('bold');
+    if (rowsForLevel.length > 0) {
+      applyTextFormatForNewSheet_(sheet, STUDENT_LEVEL_SHEET_HEADERS, rowsForLevel.length);
+      sheet.getRange(2, 1, rowsForLevel.length, STUDENT_LEVEL_SHEET_HEADERS.length).setValues(rowsForLevel);
+    }
+  }
+}
+
 // ============================================================================
 // HTTP ENTRY POINTS: doGet & doPost
 // ============================================================================
 
 function doGet(e) {
+  _EXEC_HEADER_CACHE = {};
   try {
     var params = (e && e.parameter) ? e.parameter : {};
     var tokenCheck = verifyRequestToken_(params.token);
@@ -116,7 +360,7 @@ function doGet(e) {
       return jsonOutput_({ success: false, error: ssRes.error });
     }
     var ss = ssRes.ss;
-    ensureAllSheets_(ss);
+    ensureAllSheets_(ss, false);
 
     if (action === 'getPhoto') {
       return jsonOutput_(handleGetPhoto_(params.fileId));
@@ -158,6 +402,7 @@ function isPlainObject_(val) {
 }
 
 function doPost(e) {
+  _EXEC_HEADER_CACHE = {};
   var lock = null;
   var acquired = false;
   try {
@@ -189,7 +434,7 @@ function doPost(e) {
     }
 
     if (action === 'heartbeat') {
-      updatePresence_(payload);
+      try { updatePresence_(payload); } catch (presErr) {}
       return jsonOutput_({ success: true, activeUsers: getActiveUsers_(), serverVersion: getDataVersion_() });
     }
 
@@ -199,7 +444,7 @@ function doPost(e) {
         return jsonOutput_({ success: false, error: ssReadRes.error });
       }
       var ssRead = ssReadRes.ss;
-      ensureAllSheets_(ssRead);
+      ensureAllSheets_(ssRead, false);
       var authResult = action === 'login'
         ? handleLogin_(ssRead, payload)
         : handleGetUserById_(ssRead, payload.userId);
@@ -207,17 +452,21 @@ function doPost(e) {
     }
 
     lock = LockService.getScriptLock();
-    acquired = lock.tryLock(25000);
+    acquired = lock.tryLock(15000);
     if (!acquired) {
-      return jsonOutput_({ success: false, error: 'Server sedang sibuk memproses antrean simpan lain. Silakan coba sesaat lagi.' });
+      return jsonOutput_({
+        success: false,
+        retryable: true,
+        error: 'Server sedang sibuk memproses antrean simpan lain. Mencoba ulang...'
+      });
     }
 
     var actor = String(payload.actor || payload.updatedBy || 'system');
     if (action === 'setupDatabase') {
       var provRes = provisionDatabaseResources_(payload, actor);
       if (provRes && provRes.success) {
-        SpreadsheetApp.flush();
-        provRes.serverVersion = bumpDataVersion_();
+        try { SpreadsheetApp.flush(); } catch (flushErr0) {}
+        try { provRes.serverVersion = bumpDataVersion_(); } catch (verErr0) { provRes.serverVersion = getDataVersion_(); }
         provRes.serverTime = new Date().toISOString();
       }
       return jsonOutput_(provRes);
@@ -228,7 +477,7 @@ function doPost(e) {
       return jsonOutput_({ success: false, error: ssRes.error });
     }
     var ss = ssRes.ss;
-    ensureAllSheets_(ss);
+    ensureAllSheets_(ss, false);
 
     var safeData = isPlainObject_(payload.data) ? payload.data : {};
     var result;
@@ -271,7 +520,14 @@ function doPost(e) {
         result = handleResetPassword_(ss, payload.id, payload.newPassword, payload.expectedUpdatedAt, actor);
         break;
       case 'bulkImportStudents':
-        result = handleBulkImportStudents_(ss, Array.isArray(payload.rows) ? payload.rows : [], payload.classId, actor);
+        result = handleBulkImportStudents_(
+          ss,
+          Array.isArray(payload.rows) ? payload.rows : [],
+          payload.classId,
+          payload.defaultLevel,
+          actor,
+          Boolean(payload.forceDefaultLevel)
+        );
         break;
       case 'promoteClass':
         result = handlePromoteClass_(ss, payload, actor);
@@ -281,8 +537,12 @@ function doPost(e) {
     }
 
     if (result && result.success && result.mutated !== false) {
-      SpreadsheetApp.flush();
-      result.serverVersion = bumpDataVersion_();
+      try { SpreadsheetApp.flush(); } catch (flushErr) {}
+      try {
+        result.serverVersion = bumpDataVersion_();
+      } catch (verErr) {
+        result.serverVersion = getDataVersion_();
+      }
       result.serverTime = new Date().toISOString();
     }
 
@@ -452,7 +712,7 @@ function provisionDatabaseResources_(payload, actor) {
     } catch (moveErr) {}
   }
 
-  ensureAllSheets_(ss);
+  ensureAllSheets_(ss, true);
   writeAuditLog_(
     ss,
     actor || 'admin',
@@ -516,7 +776,7 @@ function handleCheckSystem_() {
     var t0 = Date.now();
     try {
       var ss = SpreadsheetApp.openById(ssId);
-      ensureAllSheets_(ss);
+      ensureAllSheets_(ss, true);
       sheetsStatus = {
         ok: true,
         message: 'Terhubung ke Spreadsheet (' + ss.getSheets().length + ' sheet siap)',
@@ -637,8 +897,10 @@ var TEXT_FORMAT_COLUMNS = {
   waktu: true
 };
 
-function applyTextFormatForNewSheet_(sheet, headers) {
-  var rowsToFormat = Math.max(1, sheet.getMaxRows() - 1);
+function applyTextFormatForNewSheet_(sheet, headers, rowCountOptional) {
+  var rowsToFormat = rowCountOptional && rowCountOptional > 0
+    ? rowCountOptional
+    : Math.max(1, sheet.getMaxRows() - 1);
   for (var hc = 0; hc < headers.length; hc++) {
     if (TEXT_FORMAT_COLUMNS[headers[hc]]) {
       sheet.getRange(2, hc + 1, rowsToFormat, 1).setNumberFormat('@');
@@ -646,7 +908,18 @@ function applyTextFormatForNewSheet_(sheet, headers) {
   }
 }
 
-function ensureAllSheets_(ss) {
+function ensureAllSheets_(ss, forceFullCheck) {
+  var bootKey = SCHEMA_BOOT_CACHE_PREFIX + ss.getId();
+  if (!forceFullCheck) {
+    try {
+      if (CacheService.getScriptCache().get(bootKey) === '1') {
+        if (ss.getSheetByName('Settings') && ss.getSheetByName('Students') && ss.getSheetByName('Siswa_SMA_MA')) {
+          return;
+        }
+      }
+    } catch (cacheBootErr) {}
+  }
+
   var names = Object.keys(SHEET_SCHEMAS);
   var initialized = false;
   for (var i = 0; i < names.length; i++) {
@@ -658,11 +931,13 @@ function ensureAllSheets_(ss) {
       sheet.appendRow(headers);
       sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
       applyTextFormatForNewSheet_(sheet, headers);
+      _EXEC_HEADER_CACHE[name] = headers.slice();
       initialized = true;
     } else if (sheet.getLastRow() === 0) {
       sheet.appendRow(headers);
       sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
       applyTextFormatForNewSheet_(sheet, headers);
+      _EXEC_HEADER_CACHE[name] = headers.slice();
       initialized = true;
     } else {
       var lastCol = sheet.getLastColumn();
@@ -681,6 +956,7 @@ function ensureAllSheets_(ss) {
           existingHeaders.push(headers[hc]);
         }
       }
+      _EXEC_HEADER_CACHE[name] = existingHeaders.slice();
     }
   }
 
@@ -735,9 +1011,22 @@ function ensureAllSheets_(ss) {
     ensureAllSessionSheets_(ss);
   }
 
+  var levelSheetsCreated = ensureStudentLevelSheetsExist_(ss);
+  if (levelSheetsCreated) {
+    var existingStudentsCheck = ss.getSheetByName('Students');
+    if (existingStudentsCheck && existingStudentsCheck.getLastRow() > 1) {
+      syncStudentLevelSheets_(ss);
+    }
+    initialized = true;
+  }
+
   if (initialized && !getScriptProps_().getProperty(PROP_DATA_VERSION)) {
     getScriptProps_().setProperty(PROP_DATA_VERSION, '1');
   }
+
+  try {
+    CacheService.getScriptCache().put(bootKey, '1', 1800);
+  } catch (cachePutErr) {}
 }
 
 function seedInitialSettings_(sheet) {
@@ -835,14 +1124,21 @@ function seedInitialSchoolData_(ss) {
 }
 
 function getHeaders_(sheet, schemaName) {
+  var cacheKey = (sheet && sheet.getName()) ? sheet.getName() : String(schemaName || '');
+  if (cacheKey && _EXEC_HEADER_CACHE[cacheKey]) {
+    return _EXEC_HEADER_CACHE[cacheKey].slice();
+  }
   var schema = SHEET_SCHEMAS[schemaName];
   var lastCol = sheet.getLastColumn();
   if (lastCol === 0) {
-    if (schema) return schema.slice();
-    if (String(schemaName).indexOf('Presensi_Guru_') === 0) return TEACHER_SESSION_ATT_HEADERS.slice();
-    return STUDENT_SESSION_ATT_HEADERS.slice();
+    var fallback = schema
+      ? schema.slice()
+      : (String(schemaName).indexOf('Presensi_Guru_') === 0 ? TEACHER_SESSION_ATT_HEADERS.slice() : STUDENT_SESSION_ATT_HEADERS.slice());
+    if (cacheKey) _EXEC_HEADER_CACHE[cacheKey] = fallback.slice();
+    return fallback;
   }
   var headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); });
+  if (cacheKey) _EXEC_HEADER_CACHE[cacheKey] = headerRow.slice();
   return headerRow;
 }
 
@@ -959,6 +1255,7 @@ function ensureSessionSheet_(ss, sessionObj) {
         existingHeaders.push(headers[hc]);
       }
     }
+    _EXEC_HEADER_CACHE[sheetName] = existingHeaders.slice();
   }
   return sheet;
 }
@@ -1261,18 +1558,21 @@ function updateRowCellsById_(sheet, schemaName, id, patchObj, expectedUpdatedAt)
 
   var statusCol = headers.indexOf('status');
   if (statusCol >= 0 && String(currentValues[statusCol] || '').toLowerCase() === 'dihapus') {
-    return { success: false, error: 'Data sudah dihapus.' };
+    return { success: false, alreadyDeleted: true, error: 'Data sudah dihapus.' };
   }
 
   var updatedCol = headers.indexOf('diubah_pada');
   var currentUpdatedAt = updatedCol >= 0
-    ? String(normalizeSheetCellValue_('diubah_pada', currentValues[updatedCol]) || '')
+    ? String(normalizeSheetCellValue_('diubah_pada', currentValues[updatedCol]) || '').trim()
     : '';
 
-  if (expectedUpdatedAt && currentUpdatedAt && String(expectedUpdatedAt) !== currentUpdatedAt) {
-    var expMs = Date.parse(String(expectedUpdatedAt));
+  var expStr = (expectedUpdatedAt === undefined || expectedUpdatedAt === null) ? '' : String(expectedUpdatedAt).trim();
+  if (expStr === 'undefined' || expStr === 'null') expStr = '';
+
+  if (expStr && currentUpdatedAt && expStr !== currentUpdatedAt) {
+    var expMs = Date.parse(expStr);
     var curMs = Date.parse(currentUpdatedAt);
-    if (isNaN(expMs) || isNaN(curMs) || expMs !== curMs) {
+    if (isNaN(expMs) || isNaN(curMs) || Math.abs(expMs - curMs) >= 1000) {
       return {
         success: false,
         conflict: true,
@@ -1315,15 +1615,30 @@ function updateRowCellsById_(sheet, schemaName, id, patchObj, expectedUpdatedAt)
 }
 
 function softDeleteRowById_(sheet, schemaName, id, expectedUpdatedAt, actor) {
+  if (!sheet) {
+    return { success: false, error: 'Sheet "' + schemaName + '" tidak ditemukan.' };
+  }
+  var rowIndex = findRowById_(sheet, id);
+  if (rowIndex === -1) {
+    return { success: true, alreadyDeleted: true, mutated: false, message: 'Data sudah tidak ada atau sudah terhapus.' };
+  }
+  var headers = getHeaders_(sheet, schemaName);
+  var statusCol = headers.indexOf('status');
+  if (statusCol >= 0) {
+    var curStatus = String(sheet.getRange(rowIndex, statusCol + 1).getValue() || '').toLowerCase();
+    if (curStatus === 'dihapus') {
+      return { success: true, alreadyDeleted: true, mutated: false, message: 'Data sudah terhapus sebelumnya.' };
+    }
+  }
   var patch = {
     status: 'dihapus',
     updatedBy: actor || 'system'
   };
-  var headers = getHeaders_(sheet, schemaName);
   if (headers.indexOf('isActive') >= 0) {
     patch.isActive = false;
   }
-  return updateRowCellsById_(sheet, schemaName, id, patch, expectedUpdatedAt);
+  // Skip stale expectedUpdatedAt rejection on active soft-delete to eliminate delete collisions
+  return updateRowCellsById_(sheet, schemaName, id, patch, null);
 }
 
 function writeAuditLog_(ss, actor, action, entity, entityId, details) {
@@ -2815,18 +3130,37 @@ function handleCreateGeneric_(ss, entity, data, actor) {
         return { success: false, mutated: false, error: 'NIS siswa sudah terdaftar.' };
       }
     }
+    var clsForStudent = null;
+    if (data.classId) {
+      var clsRowsForStd = readActiveRows_(ss, 'Classes');
+      for (var cs = 0; cs < clsRowsForStd.length; cs++) {
+        if (String(clsRowsForStd[cs].id) === String(data.classId)) {
+          clsForStudent = clsRowsForStd[cs];
+          break;
+        }
+      }
+    }
     obj.nis = sNis;
     obj.name = sName;
+    obj.address = String(data.address || '').trim();
+    obj.level = inferEducationLevel_(data.level, clsForStudent ? clsForStudent.grade : '', clsForStudent ? clsForStudent.name : '') || '';
     obj.barcodeCard = data.barcodeCard || ('CARD-' + sNis);
     obj.isActive = true;
   }
 
-  if (entity === 'Classes' && data.homeRoomTeacherId && !data.homeRoomTeacherName) {
-    var teachers = readActiveRows_(ss, 'Teachers');
-    for (var t = 0; t < teachers.length; t++) {
-      if (String(teachers[t].id) === String(data.homeRoomTeacherId)) {
-        obj.homeRoomTeacherName = teachers[t].name;
-        break;
+  if (entity === 'Classes') {
+    obj.level = inferEducationLevel_(data.level, data.grade, data.name) || 'SMA/MA';
+    if (!obj.academicYear) {
+      var stRowsYear = readActiveRows_(ss, 'Settings');
+      obj.academicYear = (stRowsYear.length > 0 && stRowsYear[0].academicYear) ? String(stRowsYear[0].academicYear) : '2026/2027';
+    }
+    if (data.homeRoomTeacherId && !data.homeRoomTeacherName) {
+      var teachers = readActiveRows_(ss, 'Teachers');
+      for (var t = 0; t < teachers.length; t++) {
+        if (String(teachers[t].id) === String(data.homeRoomTeacherId)) {
+          obj.homeRoomTeacherName = teachers[t].name;
+          break;
+        }
       }
     }
   }
@@ -2889,6 +3223,9 @@ function handleCreateGeneric_(ss, entity, data, actor) {
   appendObjectRow_(sheet, entity, obj);
   if (entity === 'Sessions') {
     ensureSessionSheet_(ss, obj);
+  }
+  if (entity === 'Students') {
+    syncSingleStudentInLevelSheets_(ss, obj, false);
   }
   writeAuditLog_(ss, actor, 'CREATE', entity, newId, entity === 'Sessions' ? ('Buat sesi "' + obj.name + '" (' + obj.targetType + ') -> Sheet ' + obj.sheetName) : ('Tambah data baru pada ' + entity));
 
@@ -3040,33 +3377,49 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
     delete patch.subject;
   }
 
-  if (entity === 'Students' && patch.hasOwnProperty('nis')) {
-    var nextNis = String(patch.nis || '').trim();
-    if (!nextNis) {
-      return { success: false, mutated: false, error: 'NIS siswa wajib diisi.' };
-    }
-    var curStudentsCheck = readActiveRows_(ss, 'Students');
-    for (var stc = 0; stc < curStudentsCheck.length; stc++) {
-      if (String(curStudentsCheck[stc].id) !== String(id) &&
-          String(curStudentsCheck[stc].nis || '').trim() === nextNis) {
-        return { success: false, mutated: false, error: 'NIS "' + nextNis + '" sudah terdaftar pada siswa lain.' };
+  if (entity === 'Students') {
+    if (patch.hasOwnProperty('nis')) {
+      var nextNis = String(patch.nis || '').trim();
+      if (!nextNis) {
+        return { success: false, mutated: false, error: 'NIS siswa wajib diisi.' };
       }
-    }
-    patch.nis = nextNis;
-  }
-
-  if (entity === 'Classes' && patch.hasOwnProperty('homeRoomTeacherId')) {
-    var resolvedTeacherName = '';
-    if (patch.homeRoomTeacherId) {
-      var tchRows = readActiveRows_(ss, 'Teachers');
-      for (var tc = 0; tc < tchRows.length; tc++) {
-        if (String(tchRows[tc].id) === String(patch.homeRoomTeacherId)) {
-          resolvedTeacherName = tchRows[tc].name;
-          break;
+      var curStudentsCheck = readActiveRows_(ss, 'Students');
+      for (var stc = 0; stc < curStudentsCheck.length; stc++) {
+        if (String(curStudentsCheck[stc].id) !== String(id) &&
+            String(curStudentsCheck[stc].nis || '').trim() === nextNis) {
+          return { success: false, mutated: false, error: 'NIS "' + nextNis + '" sudah terdaftar pada siswa lain.' };
         }
       }
+      patch.nis = nextNis;
     }
-    patch.homeRoomTeacherName = resolvedTeacherName;
+    if (patch.hasOwnProperty('address')) {
+      patch.address = String(patch.address || '').trim();
+    }
+    if (patch.hasOwnProperty('level')) {
+      patch.level = normalizeEducationLevel_(patch.level);
+    }
+  }
+
+  if (entity === 'Classes') {
+    if (patch.hasOwnProperty('level') || patch.hasOwnProperty('grade') || patch.hasOwnProperty('name')) {
+      var normClsLvl = inferEducationLevel_(patch.level, patch.grade, patch.name);
+      if (normClsLvl) {
+        patch.level = normClsLvl;
+      }
+    }
+    if (patch.hasOwnProperty('homeRoomTeacherId')) {
+      var resolvedTeacherName = '';
+      if (patch.homeRoomTeacherId) {
+        var tchRows = readActiveRows_(ss, 'Teachers');
+        for (var tc = 0; tc < tchRows.length; tc++) {
+          if (String(tchRows[tc].id) === String(patch.homeRoomTeacherId)) {
+            resolvedTeacherName = tchRows[tc].name;
+            break;
+          }
+        }
+      }
+      patch.homeRoomTeacherName = resolvedTeacherName;
+    }
   }
 
   var res = updateRowCellsById_(sheet, entity, id, patch, expectedUpdatedAt);
@@ -3076,6 +3429,11 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
 
   if (updatedSessionSheetTarget) {
     ensureSessionSheet_(ss, updatedSessionSheetTarget);
+  }
+  if (entity === 'Students') {
+    syncSingleStudentInLevelSheets_(ss, id, false);
+  } else if (entity === 'Classes') {
+    syncStudentLevelSheets_(ss);
   }
 
   writeAuditLog_(ss, actor, 'UPDATE', entity, id, 'Perbarui ' + res.changedCount + ' sel pada ' + entity);
@@ -3106,6 +3464,15 @@ function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
   if (!res.success) {
     return { success: false, mutated: false, conflict: res.conflict, error: res.error };
   }
+  if (res.alreadyDeleted) {
+    return { success: true, mutated: false, alreadyDeleted: true, message: res.message || 'Data sudah terhapus.' };
+  }
+
+  if (entity === 'Students') {
+    syncSingleStudentInLevelSheets_(ss, id, true);
+  } else if (entity === 'Classes') {
+    syncStudentLevelSheets_(ss);
+  }
 
   writeAuditLog_(ss, actor, 'SOFT_DELETE', entity, id, 'Soft delete (status = dihapus) pada ' + entity);
   return { success: true, message: 'Data berhasil dihapus (soft delete).' };
@@ -3135,21 +3502,45 @@ function handleResetPassword_(ss, id, newPassword, expectedUpdatedAt, actor) {
   return { success: true, message: 'Kata sandi berhasil direset.' };
 }
 
-function handleBulkImportStudents_(ss, rows, defaultClassId, actor) {
+function handleBulkImportStudents_(ss, rows, defaultClassId, defaultLevel, actor, forceDefaultLevel) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return { success: false, mutated: false, error: 'Data import kosong.' };
   }
 
   var sheet = ss.getSheetByName('Students');
+  var classesSheet = ss.getSheetByName('Classes');
   var existing = readActiveRows_(ss, 'Students');
   var nisSet = {};
   for (var i = 0; i < existing.length; i++) {
     nisSet[String(existing[i].nis)] = true;
   }
 
+  var existingClasses = readActiveRows_(ss, 'Classes');
+  var classById = {};
+  var classByNameKey = {};
+  for (var ci = 0; ci < existingClasses.length; ci++) {
+    var exCls = existingClasses[ci];
+    classById[String(exCls.id)] = exCls;
+    var nameKey = String(exCls.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (nameKey && !classByNameKey[nameKey]) {
+      classByNameKey[nameKey] = exCls;
+    }
+  }
+
+  var settingsRows = readActiveRows_(ss, 'Settings');
+  var activeAcademicYear = (settingsRows.length > 0 && settingsRows[0].academicYear)
+    ? String(settingsRows[0].academicYear)
+    : '2026/2027';
+
+  var fallbackLevel = normalizeEducationLevel_(defaultLevel) || '';
   var parts = nowWibParts_();
   var importedCount = 0;
+  var createdClassesCount = 0;
+  var createdClassNames = [];
   var errorRows = [];
+
+  var pendingClassObjs = [];
+  var pendingStudentObjs = [];
 
   for (var r = 0; r < rows.length; r++) {
     var row = rows[r] || {};
@@ -3166,23 +3557,77 @@ function handleBulkImportStudents_(ss, rows, defaultClassId, actor) {
 
     var genderRaw = String(row.jenisKelamin || row.gender || 'L').toUpperCase();
     var gender = genderRaw.indexOf('P') === 0 ? 'P' : 'L';
-    var clsId = String(row.classId || defaultClassId || '').trim();
+    var rawClassName = String(row.kelas || row.className || row.class || row.Kelas || '').trim();
+    var rowClassIdInput = String(row.classId || '').trim();
+    var rawRowLevel = String(row.jenjang || row.level || row.Jenjang || '').trim();
+    var rawGrade = String(row.tingkat || row.grade || '').trim();
+    var address = String(row.alamat || row.address || row.Alamat || row.alamatLengkap || '').trim();
 
-    appendObjectRow_(sheet, 'Students', {
-      id: generateId_('std'),
+    var rowInferredLevel = (forceDefaultLevel && fallbackLevel)
+      ? fallbackLevel
+      : inferEducationLevel_(rawRowLevel || fallbackLevel, rawGrade, rawClassName);
+
+    var resolvedClass = null;
+    if (rowClassIdInput && classById[rowClassIdInput]) {
+      resolvedClass = classById[rowClassIdInput];
+    } else if (rawClassName) {
+      var lookupKey = rawClassName.toLowerCase().replace(/\s+/g, ' ');
+      if (classByNameKey[lookupKey]) {
+        resolvedClass = classByNameKey[lookupKey];
+      } else if (classesSheet) {
+        var newClsLevel = rowInferredLevel || fallbackLevel || 'SMA/MA';
+        var newClsGrade = inferGradeNumber_(newClsLevel, rawGrade, rawClassName);
+        var newClsObj = {
+          id: generateId_('cls') + r,
+          name: rawClassName,
+          grade: newClsGrade,
+          academicYear: activeAcademicYear,
+          level: newClsLevel,
+          homeRoomTeacherId: '',
+          homeRoomTeacherName: '',
+          status: 'aktif',
+          createdAt: parts.iso,
+          diubah_pada: parts.iso,
+          updatedBy: actor
+        };
+        pendingClassObjs.push(newClsObj);
+        classById[newClsObj.id] = newClsObj;
+        classByNameKey[lookupKey] = newClsObj;
+        resolvedClass = newClsObj;
+        createdClassesCount++;
+        createdClassNames.push(rawClassName);
+      }
+    }
+
+    if (!resolvedClass && defaultClassId && classById[String(defaultClassId)]) {
+      resolvedClass = classById[String(defaultClassId)];
+    }
+
+    var clsId = resolvedClass ? String(resolvedClass.id) : String(rowClassIdInput || defaultClassId || '').trim();
+    var finalLevel = (forceDefaultLevel && fallbackLevel)
+      ? fallbackLevel
+      : (
+        normalizeEducationLevel_(rawRowLevel) ||
+        (resolvedClass ? inferEducationLevel_(resolvedClass.level, resolvedClass.grade, resolvedClass.name) : '') ||
+        fallbackLevel ||
+        'SMA/MA'
+      );
+
+    pendingStudentObjs.push({
+      id: generateId_('std') + r,
       nis: nis,
-      nisn: String(row.nisn || row.NISN || ''),
+      nisn: String(row.nisn || row.NISN || '').trim(),
       name: name,
       gender: gender,
       classId: clsId,
-      barcodeCard: String(row.barcodeCard || ('CARD-' + nis)),
-      parentPhone: String(row.noHpOrtu || row.parentPhone || ''),
+      barcodeCard: String(row.barcodeCard || ('CARD-' + nis)).trim(),
+      parentPhone: String(row.noHpOrtu || row.parentPhone || '').trim(),
       photoFileId: '',
       photoUrl: '',
-      level: '',
-      birthPlace: '',
-      birthDate: '',
-      address: '',
+      level: finalLevel,
+      birthPlace: String(row.tempatLahir || row.birthPlace || '').trim(),
+      birthDate: String(row.tanggalLahir || row.birthDate || '').trim(),
+      address: address,
       bloodType: '',
       isActive: true,
       status: 'aktif',
@@ -3195,14 +3640,66 @@ function handleBulkImportStudents_(ss, rows, defaultClassId, actor) {
     importedCount++;
   }
 
-  writeAuditLog_(ss, actor, 'BULK_IMPORT', 'Students', 'bulk', 'Import massal ' + importedCount + ' siswa (' + errorRows.length + ' error)');
+  // Batch write auto-created Classes in ONE setValues RPC
+  if (pendingClassObjs.length > 0 && classesSheet) {
+    var clsHeaders = getHeaders_(classesSheet, 'Classes');
+    var clsMatrix = [];
+    for (var pc = 0; pc < pendingClassObjs.length; pc++) {
+      var cObj = pendingClassObjs[pc];
+      var cRow = [];
+      for (var ch = 0; ch < clsHeaders.length; ch++) {
+        var cKey = clsHeaders[ch];
+        var cVal = cObj.hasOwnProperty(cKey) ? cObj[cKey] : '';
+        cRow.push(cVal === undefined || cVal === null ? '' : cVal);
+      }
+      clsMatrix.push(cRow);
+    }
+    var clsStartRow = classesSheet.getLastRow() + 1;
+    classesSheet.getRange(clsStartRow, 1, clsMatrix.length, clsHeaders.length).setValues(clsMatrix);
+  }
+
+  // Batch write Students in ONE setValues RPC
+  if (pendingStudentObjs.length > 0 && sheet) {
+    var stdHeaders = getHeaders_(sheet, 'Students');
+    var stdMatrix = [];
+    for (var ps = 0; ps < pendingStudentObjs.length; ps++) {
+      var sObj = pendingStudentObjs[ps];
+      var sRow = [];
+      for (var sh = 0; sh < stdHeaders.length; sh++) {
+        var sKey = stdHeaders[sh];
+        var sVal = sObj.hasOwnProperty(sKey) ? sObj[sKey] : '';
+        sRow.push(sVal === undefined || sVal === null ? '' : sVal);
+      }
+      stdMatrix.push(sRow);
+    }
+    var stdStartRow = sheet.getLastRow() + 1;
+    sheet.getRange(stdStartRow, 1, stdMatrix.length, stdHeaders.length).setValues(stdMatrix);
+  }
+
+  if (importedCount > 0 || createdClassesCount > 0) {
+    syncStudentLevelSheets_(ss);
+  }
+
+  writeAuditLog_(
+    ss,
+    actor,
+    'BULK_IMPORT',
+    'Students',
+    'bulk',
+    'Import massal ' + importedCount + ' siswa, ' + createdClassesCount + ' kelas otomatis (' + errorRows.length + ' error)'
+  );
   return {
     success: true,
-    mutated: importedCount > 0,
+    mutated: importedCount > 0 || createdClassesCount > 0,
     importedCount: importedCount,
+    createdClassesCount: createdClassesCount,
+    createdClassNames: createdClassNames,
     errorCount: errorRows.length,
     errorRows: errorRows,
-    message: 'Berhasil mengimpor ' + importedCount + ' siswa (' + errorRows.length + ' baris gagal).'
+    message:
+      'Berhasil mengimpor ' + importedCount + ' siswa' +
+      (createdClassesCount > 0 ? (', membuat ' + createdClassesCount + ' kelas baru otomatis (' + createdClassNames.join(', ') + ')') : '') +
+      ', serta memperbarui sheet jenjang (' + errorRows.length + ' baris gagal).'
   };
 }
 
@@ -3219,6 +3716,16 @@ function handlePromoteClass_(ss, payload, actor) {
     return { success: false, mutated: false, error: 'Kelas tujuan wajib dipilih.' };
   }
 
+  var classesList = readActiveRows_(ss, 'Classes');
+  var targetClsObj = null;
+  for (var tc = 0; tc < classesList.length; tc++) {
+    if (String(classesList[tc].id) === targetClassId) {
+      targetClsObj = classesList[tc];
+      break;
+    }
+  }
+  var targetLevel = targetClsObj ? inferEducationLevel_(targetClsObj.level, targetClsObj.grade, targetClsObj.name) : '';
+
   var stdSheet = ss.getSheetByName('Students');
   var students = readActiveRows_(ss, 'Students');
   var moved = 0;
@@ -3228,10 +3735,16 @@ function handlePromoteClass_(ss, payload, actor) {
       if (actionType === 'graduate') {
         updateRowCellsById_(stdSheet, 'Students', students[i].id, { isActive: false, updatedBy: actor });
       } else {
-        updateRowCellsById_(stdSheet, 'Students', students[i].id, { classId: targetClassId, updatedBy: actor });
+        var upd = { classId: targetClassId, updatedBy: actor };
+        if (targetLevel) upd.level = targetLevel;
+        updateRowCellsById_(stdSheet, 'Students', students[i].id, upd);
       }
       moved++;
     }
+  }
+
+  if (moved > 0) {
+    syncStudentLevelSheets_(ss);
   }
 
   writeAuditLog_(ss, actor, 'PROMOTE', 'Students', sourceClassId, (actionType === 'graduate' ? 'Kelulusan ' : 'Kenaikan kelas ') + moved + ' siswa');

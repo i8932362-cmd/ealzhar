@@ -60,7 +60,16 @@ export async function acquireCameraStream(
   }
 
   const attempts: MediaStreamConstraints[] = [
-    // Attempt 1: Ideal facing mode + light 480p resolution for instant negotiation & smooth FPS
+    // Attempt 1: Wide 16:9 HD stream with preferred facing mode (non-1:1, spacious view)
+    {
+      video: {
+        facingMode: { ideal: preferredFacingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    },
+    // Attempt 2: Ideal facing mode + light 480p resolution fallback
     {
       video: {
         facingMode: { ideal: preferredFacingMode },
@@ -69,14 +78,14 @@ export async function acquireCameraStream(
       },
       audio: false,
     },
-    // Attempt 2: Only ideal facingMode without resolution constraints
+    // Attempt 3: Only ideal facingMode without resolution constraints
     {
       video: {
         facingMode: { ideal: preferredFacingMode },
       },
       audio: false,
     },
-    // Attempt 3: Universal basic video fallback for older webcams/drivers
+    // Attempt 4: Universal basic video fallback for older webcams/drivers
     {
       video: true,
       audio: false,

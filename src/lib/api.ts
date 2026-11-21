@@ -121,25 +121,54 @@ async function parseGasJsonResponse<T = any>(res: Response): Promise<ApiResponse
   const rawText = await res.text().catch(() => '');
   const trimmed = rawText.trim();
   if (!trimmed) {
-    return { success: false, error: `Respon kosong dari Google Apps Script (HTTP ${res.status}).` };
+    return {
+      success: false,
+      transient: true,
+      error: `Respon kosong dari Google Apps Script (HTTP ${res.status}).`,
+    };
   }
   if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html') || trimmed.startsWith('<')) {
     const needsAuth = /accounts\.google\.com|ServiceLogin|Authorization/i.test(trimmed);
     return {
       success: false,
+      transient: !needsAuth && (res.status >= 500 || res.status === 429 || res.status === 200),
       error: needsAuth
         ? 'Google Apps Script meminta otorisasi. Pastikan Deploy Web App diatur: "Execute as: Me" & "Who has access: Anyone".'
-        : `Google Apps Script mengembalikan halaman HTML error (HTTP ${res.status}). Pastikan Anda sudah Deploy Versi Baru pada Code.gs.`,
+        : `Google Apps Script sedang sibuk atau mengembalikan halaman error (HTTP ${res.status}).`,
     };
   }
   try {
     const parsed = JSON.parse(trimmed);
     if (!parsed || typeof parsed !== 'object') {
-      return { success: false, error: 'Format JSON Google Apps Script tidak valid.' };
+      return { success: false, transient: true, error: 'Format JSON Google Apps Script tidak valid.' };
     }
     return parsed as ApiResponse<T>;
   } catch {
-    return { success: false, error: 'Respon Google Apps Script bukan JSON valid.' };
+    return { success: false, transient: true, error: 'Respon Google Apps Script bukan JSON valid.' };
+  }
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error('Koneksi ke Google Apps Script melebihi batas waktu. Mencoba ulang...');
+      (timeoutErr as any).retryable = true;
+      (timeoutErr as any).isTimeout = true;
+      throw timeoutErr;
+    }
+    const netErr = new Error(err?.message || 'Gangguan jaringan saat menghubungi Google Apps Script.');
+    (netErr as any).retryable = true;
+    throw netErr;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -161,15 +190,39 @@ export async function gasGet<T = any>(
   }
 
   const targetUrl = `${url}${url.includes('?') ? '&' : '?'}${query.toString()}`;
-  const res = await fetch(targetUrl, {
-    method: 'GET',
-    redirect: 'follow',
-  });
-  const data = await parseGasJsonResponse<T>(res);
-  if (!res.ok || data.success === false) {
-    throw new Error(data.error || `Gagal memuat data (${res.status}).`);
+  const maxAttempts = 2;
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const res = await fetchWithTimeout(
+        targetUrl,
+        { method: 'GET', redirect: 'follow' },
+        25000
+      );
+      const data = await parseGasJsonResponse<T>(res);
+      if (!res.ok || data.success === false) {
+        const msg = data.error || `Gagal memuat data (${res.status}).`;
+        const err = new Error(msg);
+        (err as any).retryable =
+          Boolean((data as any).transient) ||
+          res.status === 429 ||
+          res.status >= 500 ||
+          isLockContentionMessage(msg);
+        throw err;
+      }
+      return data;
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxAttempts - 1 && Boolean(err?.retryable)) {
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+      throw err;
+    }
   }
-  return data;
+
+  throw lastError || new Error('Gagal memuat data dari Google Apps Script.');
 }
 
 const READ_ONLY_POST_ACTIONS = new Set(['login', 'me', 'heartbeat', 'checkSystem']);
@@ -189,26 +242,44 @@ function isLockContentionMessage(msg: string): boolean {
   return lower.includes('server sedang sibuk') || lower.includes('antrean') || lower.includes('lock');
 }
 
+function isRetryablePostError(err: any): boolean {
+  if (!err) return false;
+  if (err.conflict || err?.response?.unauthorized) return false;
+  if (err.retryable === true || err?.response?.retryable === true || err?.response?.transient === true) {
+    return true;
+  }
+  if (!err.response) {
+    // Pure network drop / AbortError / TypeError: Failed to fetch
+    return true;
+  }
+  return isLockContentionMessage(err.message || '');
+}
+
 async function executeGasPostOnce<T = any>(
   url: string,
   token: string,
   action: string,
   payload: Record<string, any>
 ): Promise<ApiResponse<T>> {
-  const res = await fetch(url, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: {
-      // Wajib text/plain agar Google Apps Script tidak memicu CORS preflight OPTIONS
-      'Content-Type': 'text/plain;charset=utf-8',
+  const timeoutMs = action === 'bulkImportStudents' || action === 'setupDatabase' ? 45000 : 25000;
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: 'POST',
+      redirect: 'follow',
+      headers: {
+        // Wajib text/plain agar Google Apps Script tidak memicu CORS preflight OPTIONS
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        ...payload,
+        token,
+        action,
+        actor: payload.actor || currentActorName,
+      }),
     },
-    body: JSON.stringify({
-      ...payload,
-      token,
-      action,
-      actor: payload.actor || currentActorName,
-    }),
-  });
+    timeoutMs
+  );
 
   const data = await parseGasJsonResponse<T>(res);
 
@@ -217,6 +288,14 @@ async function executeGasPostOnce<T = any>(
     const err = new Error(msg);
     (err as any).conflict = Boolean(data.conflict);
     (err as any).response = data;
+    (err as any).retryable =
+      !data.conflict &&
+      !data.unauthorized &&
+      (res.status === 429 ||
+        res.status >= 500 ||
+        Boolean((data as any).transient) ||
+        Boolean((data as any).retryable) ||
+        isLockContentionMessage(msg));
     throw err;
   }
 
@@ -238,6 +317,7 @@ export async function gasPost<T = any>(
 
   const { url, token } = getGasConfig();
   const isMutating = trackSaveStatus !== false && !READ_ONLY_POST_ACTIONS.has(action);
+  const retryDelays = [450, 1100];
 
   const runRequest = async (): Promise<ApiResponse<T>> => {
     if (trackSaveStatus && !silent) {
@@ -245,16 +325,28 @@ export async function gasPost<T = any>(
     }
 
     try {
-      let data: ApiResponse<T>;
-      try {
-        data = await executeGasPostOnce<T>(url, token, action, payload);
-      } catch (firstErr: any) {
-        if (isMutating && isLockContentionMessage(firstErr?.message || '')) {
-          await new Promise((r) => setTimeout(r, 250));
+      let data: ApiResponse<T> | null = null;
+      let lastErr: any = null;
+
+      for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+        try {
           data = await executeGasPostOnce<T>(url, token, action, payload);
-        } else {
-          throw firstErr;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          if (attempt < retryDelays.length && isRetryablePostError(err)) {
+            if (trackSaveStatus && !silent) {
+              emitSaveState('saving', 'Menghubungkan ulang...');
+            }
+            await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+            continue;
+          }
+          throw err;
         }
+      }
+
+      if (!data) {
+        throw lastErr || new Error('Gagal menerima respon dari server.');
       }
 
       if (trackSaveStatus && !silent) {

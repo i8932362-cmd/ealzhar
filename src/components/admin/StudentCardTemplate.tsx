@@ -297,6 +297,13 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
                 </div>
               </div>
             </div>
+
+            {student.address && (
+              <div className="pt-0.5">
+                <div className="text-[7px] font-bold text-slate-400 leading-none">Alamat</div>
+                <div className="text-[8px] font-medium text-slate-700 truncate">{student.address}</div>
+              </div>
+            )}
           </div>
         </div>
 
