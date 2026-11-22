@@ -247,7 +247,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
       </div>
 
       {/* Center & Bottom Body: Photo + Info on Top, Barcode (Left) + Principal Signature (Right) on Bottom */}
-      <div className="px-3.5 py-2 flex-1 flex flex-col justify-between relative z-10">
+      <div className="px-3.5 pt-1.5 pb-1.5 flex-1 flex flex-col justify-between relative z-10">
         {/* Top Row: Student Photo + Info Fields */}
         <div className="flex items-start gap-3">
           {/* Student Portrait Box with Formal Blue Background (Standar Pas Foto Biru) */}
@@ -316,10 +316,10 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
           </div>
         </div>
 
-        {/* Bottom Row: Barcode NISN (Sebelah Kiri) & Tanda Tangan Kepala Sekolah (Sebelah Kanan) */}
-        <div className="flex items-end justify-between gap-2 pt-1 pb-0.5">
-          {/* Barcode NISN positioned cleanly to the left of the principal signature */}
-          <div className="flex-1 max-w-[205px] bg-white rounded-xl border border-slate-300 px-2.5 py-1.5 shadow-2xs flex flex-col items-center justify-center">
+        {/* Bottom Row: Barcode NISN (Sebelah Kiri, posisi naik) & Tanda Tangan Kepala Sekolah (Sebelah Kanan) */}
+        <div className="flex-1 flex items-end justify-between gap-2 pt-0.5 pb-0.5">
+          {/* Barcode NISN positioned cleanly higher to the left of the principal signature */}
+          <div className="self-start mt-1.5 flex-1 max-w-[205px] bg-white rounded-xl border border-slate-300 px-2.5 py-1.5 shadow-2xs flex flex-col items-center justify-center">
             <div
               className="w-full flex items-center justify-center overflow-hidden h-8"
               dangerouslySetInnerHTML={{ __html: barcodeSvg }}
@@ -330,7 +330,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
           </div>
 
           {/* Principal Signature & Optional Custom Stamp Box (Pojok Kanan Bawah) */}
-          <div className="text-right text-[7.5px] leading-tight relative pr-0.5 flex-shrink-0 max-w-[196px]">
+          <div className="self-end text-right text-[7.5px] leading-tight relative pr-0.5 flex-shrink-0 max-w-[196px]">
             <div className="text-slate-500 font-medium truncate">
               {config.signaturePlaceDate?.trim() || 'Jombang, 15 Juli 2026'}
             </div>
