@@ -21,7 +21,11 @@ var PROP_SECRET_TOKEN = 'SECRET_TOKEN';
 var PROP_DATA_VERSION = 'DATA_VERSION';
 var CACHE_PRESENCE_KEY = 'PRESENSI_ACTIVE_USERS_V1';
 var SCHEMA_BOOT_CACHE_PREFIX = 'SCHEMA_BOOT_V3_';
+var DRIVE_BLOB_PREFIX = '__DRIVE_BLOB__:';
+var CACHE_BLOB_PREFIX = 'PRESENSI_BLOB_V1_';
+var CELL_DRIVE_SPILL_THRESHOLD = 4500;
 var _EXEC_HEADER_CACHE = {};
+var _EXEC_BLOB_CACHE = {};
 
 var SHEET_SCHEMAS = {
   Settings: [
@@ -342,6 +346,7 @@ function syncStudentLevelSheets_(ss) {
 
 function doGet(e) {
   _EXEC_HEADER_CACHE = {};
+  _EXEC_BLOB_CACHE = {};
   try {
     var params = (e && e.parameter) ? e.parameter : {};
     var tokenCheck = verifyRequestToken_(params.token);
@@ -403,6 +408,7 @@ function isPlainObject_(val) {
 
 function doPost(e) {
   _EXEC_HEADER_CACHE = {};
+  _EXEC_BLOB_CACHE = {};
   var lock = null;
   var acquired = false;
   try {
@@ -506,6 +512,9 @@ function doPost(e) {
         break;
       case 'uploadPhoto':
         result = handleUploadPhoto_(ss, payload, actor);
+        break;
+      case 'deletePhoto':
+        result = handleDeletePhoto_(ss, payload, actor);
         break;
       case 'createRecord':
         result = handleCreateGeneric_(ss, String(payload.entity || ''), safeData, actor);
@@ -669,6 +678,8 @@ function ensureDriveFolders_(allowCreateRoot, customFolderName) {
   var studentFaceFolder = getOrCreateSubfolder_(rootFolder, '01_Database_Wajah_Siswa');
   var teacherFaceFolder = getOrCreateSubfolder_(rootFolder, '02_Database_Wajah_Guru');
   var cardPhotoFolder = getOrCreateSubfolder_(rootFolder, '03_Foto_Kartu_Siswa');
+  var cardAssetsFolder = getOrCreateSubfolder_(rootFolder, '04_Logo_TTD_dan_Aset_Kartu');
+  var blobDataFolder = getOrCreateSubfolder_(rootFolder, '05_Data_Sistem_Teks');
 
   return {
     ok: true,
@@ -676,7 +687,9 @@ function ensureDriveFolders_(allowCreateRoot, customFolderName) {
     rootFolder: rootFolder,
     studentFaceFolder: studentFaceFolder,
     teacherFaceFolder: teacherFaceFolder,
-    cardPhotoFolder: cardPhotoFolder
+    cardPhotoFolder: cardPhotoFolder,
+    cardAssetsFolder: cardAssetsFolder,
+    blobDataFolder: blobDataFolder
   };
 }
 
@@ -731,9 +744,15 @@ function provisionDatabaseResources_(payload, actor) {
     spreadsheetUrl: ss.getUrl(),
     folderName: driveRes.rootFolder.getName(),
     folderUrl: driveRes.rootFolder.getUrl(),
-    subfolders: ['01_Database_Wajah_Siswa', '02_Database_Wajah_Guru', '03_Foto_Kartu_Siswa'],
+    subfolders: [
+      '01_Database_Wajah_Siswa',
+      '02_Database_Wajah_Guru',
+      '03_Foto_Kartu_Siswa',
+      '04_Logo_TTD_dan_Aset_Kartu',
+      '05_Data_Sistem_Teks'
+    ],
     message:
-      'Database Google Sheets ("' + ss.getName() + '") & Folder Drive ("' + driveRes.rootFolder.getName() + '") beserta subfolder wajah siap digunakan!'
+      'Database Google Sheets ("' + ss.getName() + '") & Folder Drive ("' + driveRes.rootFolder.getName() + '") beserta subfolder aset & wajah siap digunakan!'
   };
 }
 
@@ -1157,8 +1176,118 @@ function padHhMm_(raw, fallback) {
   return (hh < 10 ? '0' + hh : String(hh)) + ':' + (mm < 10 ? '0' + mm : String(mm));
 }
 
+function extractDriveFileIdFromRef_(raw) {
+  var str = String(raw || '').trim();
+  if (!str) return '';
+  if (str.indexOf('gas-photo://') === 0) {
+    return str.slice('gas-photo://'.length).trim();
+  }
+  if (str.indexOf(DRIVE_BLOB_PREFIX) === 0) {
+    return str.slice(DRIVE_BLOB_PREFIX.length).trim();
+  }
+  var idMatch = str.match(/\/d\/([a-zA-Z0-9_-]{10,})/) || str.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  if (idMatch && idMatch[1]) {
+    return idMatch[1];
+  }
+  return '';
+}
+
+function collectDriveFileIdsFromString_(raw) {
+  var str = String(raw || '');
+  if (!str) return [];
+  var found = {};
+  var rePhoto = /gas-photo:\/\/([a-zA-Z0-9_-]+)/g;
+  var m;
+  while ((m = rePhoto.exec(str)) !== null) {
+    if (m[1]) found[m[1]] = true;
+  }
+  var reBlob = /__DRIVE_BLOB__:([a-zA-Z0-9_-]+)/g;
+  while ((m = reBlob.exec(str)) !== null) {
+    if (m[1]) found[m[1]] = true;
+  }
+  return Object.keys(found);
+}
+
+function trashDriveFileSafely_(rawIdOrRef) {
+  var fileId = extractDriveFileIdFromRef_(rawIdOrRef) || String(rawIdOrRef || '').trim();
+  if (!fileId || fileId.length < 8) return false;
+  delete _EXEC_BLOB_CACHE[fileId];
+  try {
+    CacheService.getScriptCache().remove(CACHE_BLOB_PREFIX + fileId);
+  } catch (cacheRemErr) {}
+  try {
+    var file = DriveApp.getFileById(fileId);
+    if (!file.isTrashed()) {
+      file.setTrashed(true);
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function writeDriveBlobText_(content, label) {
+  var driveRes = ensureDriveFolders_(true);
+  if (!driveRes.ok || !driveRes.blobDataFolder) {
+    throw new Error(driveRes.error || 'Folder penyimpanan teks Drive belum siap.');
+  }
+  var safeLabel = sanitizeDriveName_(label || 'data') || 'data';
+  var fileName = safeLabel + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.txt';
+  var blob = Utilities.newBlob(String(content), 'text/plain; charset=utf-8', fileName);
+  var file = driveRes.blobDataFolder.createFile(blob);
+  var fileId = file.getId();
+  _EXEC_BLOB_CACHE[fileId] = String(content);
+  if (String(content).length <= 90000) {
+    try {
+      CacheService.getScriptCache().put(CACHE_BLOB_PREFIX + fileId, String(content), 21600);
+    } catch (cErr) {}
+  }
+  return DRIVE_BLOB_PREFIX + fileId;
+}
+
+function readDriveBlobText_(fileId) {
+  var id = String(fileId || '').trim();
+  if (!id) return '';
+  if (_EXEC_BLOB_CACHE.hasOwnProperty(id)) {
+    return _EXEC_BLOB_CACHE[id];
+  }
+  try {
+    var cached = CacheService.getScriptCache().get(CACHE_BLOB_PREFIX + id);
+    if (cached !== null && cached !== undefined) {
+      _EXEC_BLOB_CACHE[id] = cached;
+      return cached;
+    }
+  } catch (cGetErr) {}
+  try {
+    var file = DriveApp.getFileById(id);
+    if (file.isTrashed()) return '';
+    var text = file.getBlob().getDataAsString('UTF-8');
+    _EXEC_BLOB_CACHE[id] = text;
+    if (text.length <= 90000) {
+      try {
+        CacheService.getScriptCache().put(CACHE_BLOB_PREFIX + id, text, 21600);
+      } catch (cPutErr) {}
+    }
+    return text;
+  } catch (e) {
+    return '';
+  }
+}
+
+function prepareCellValueForSheet_(val, label) {
+  if (val === undefined || val === null) return '';
+  if (typeof val === 'string' && val.indexOf(DRIVE_BLOB_PREFIX) !== 0 && val.length > CELL_DRIVE_SPILL_THRESHOLD) {
+    return writeDriveBlobText_(val, label);
+  }
+  return val;
+}
+
 function normalizeSheetCellValue_(key, val) {
   if (val === undefined || val === null) return '';
+  if (typeof val === 'string' && val.indexOf(DRIVE_BLOB_PREFIX) === 0) {
+    var blobId = val.slice(DRIVE_BLOB_PREFIX.length).trim();
+    return readDriveBlobText_(blobId);
+  }
   if (isDateValue_(val) && !isNaN(val.getTime())) {
     if (key === 'date' || key === 'birthDate') {
       return Utilities.formatDate(val, TIMEZONE, 'yyyy-MM-dd');
@@ -1525,7 +1654,7 @@ function appendObjectRow_(sheet, schemaName, dataObj) {
   for (var c = 0; c < headers.length; c++) {
     var key = headers[c];
     var val = dataObj.hasOwnProperty(key) ? dataObj[key] : '';
-    rowValues.push(val === undefined || val === null ? '' : val);
+    rowValues.push(prepareCellValueForSheet_(val, schemaName + '_' + key));
   }
   sheet.appendRow(rowValues);
 }
@@ -1587,14 +1716,21 @@ function updateRowCellsById_(sheet, schemaName, id, patchObj, expectedUpdatedAt)
 
   var changedIndices = [];
   var nextRow = currentValues.slice();
+  var oldBlobIdsToTrash = [];
+
   for (var c = 0; c < headers.length; c++) {
     var key = headers[c];
     if (!patchObj.hasOwnProperty(key) || key === 'id') continue;
     var nextVal = patchObj[key] === undefined || patchObj[key] === null ? '' : patchObj[key];
-    var prevVal = normalizeSheetCellValue_(key, currentValues[c]);
+    var rawPrev = currentValues[c];
+    var prevVal = normalizeSheetCellValue_(key, rawPrev);
 
     if (String(prevVal) !== String(nextVal)) {
-      nextRow[c] = nextVal;
+      if (typeof rawPrev === 'string' && rawPrev.indexOf(DRIVE_BLOB_PREFIX) === 0) {
+        var oldBlobId = rawPrev.slice(DRIVE_BLOB_PREFIX.length).trim();
+        if (oldBlobId) oldBlobIdsToTrash.push(oldBlobId);
+      }
+      nextRow[c] = prepareCellValueForSheet_(nextVal, schemaName + '_' + key);
       changedIndices.push(c);
     }
   }
@@ -1611,7 +1747,37 @@ function updateRowCellsById_(sheet, schemaName, id, patchObj, expectedUpdatedAt)
     rowRange.setValues([nextRow]);
   }
 
+  for (var ob = 0; ob < oldBlobIdsToTrash.length; ob++) {
+    trashDriveFileSafely_(oldBlobIdsToTrash[ob]);
+  }
+
   return { success: true, rowIndex: rowIndex, changedCount: changedIndices.length, diubah_pada: nowIso };
+}
+
+function collectRowDriveIds_(headers, rowValues) {
+  var collected = {};
+  for (var c = 0; c < rowValues.length; c++) {
+    var key = headers[c] || '';
+    var raw = rowValues[c];
+    if (key === 'photoFileId' && raw) {
+      var directId = String(raw).trim();
+      if (directId) collected[directId] = true;
+    }
+    if (typeof raw === 'string' && raw) {
+      var ids = collectDriveFileIdsFromString_(raw);
+      for (var ii = 0; ii < ids.length; ii++) {
+        collected[ids[ii]] = true;
+      }
+      if (raw.indexOf(DRIVE_BLOB_PREFIX) === 0) {
+        var hydrated = normalizeSheetCellValue_(key, raw);
+        var innerIds = collectDriveFileIdsFromString_(hydrated);
+        for (var hi = 0; hi < innerIds.length; hi++) {
+          collected[innerIds[hi]] = true;
+        }
+      }
+    }
+  }
+  return Object.keys(collected);
 }
 
 function softDeleteRowById_(sheet, schemaName, id, expectedUpdatedAt, actor) {
@@ -1623,22 +1789,20 @@ function softDeleteRowById_(sheet, schemaName, id, expectedUpdatedAt, actor) {
     return { success: true, alreadyDeleted: true, mutated: false, message: 'Data sudah tidak ada atau sudah terhapus.' };
   }
   var headers = getHeaders_(sheet, schemaName);
-  var statusCol = headers.indexOf('status');
-  if (statusCol >= 0) {
-    var curStatus = String(sheet.getRange(rowIndex, statusCol + 1).getValue() || '').toLowerCase();
-    if (curStatus === 'dihapus') {
-      return { success: true, alreadyDeleted: true, mutated: false, message: 'Data sudah terhapus sebelumnya.' };
-    }
+  var rowValues = sheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
+  var driveIds = collectRowDriveIds_(headers, rowValues);
+  var trashedFiles = 0;
+  for (var d = 0; d < driveIds.length; d++) {
+    if (trashDriveFileSafely_(driveIds[d])) trashedFiles++;
   }
-  var patch = {
-    status: 'dihapus',
-    updatedBy: actor || 'system'
+  sheet.deleteRow(rowIndex);
+  return {
+    success: true,
+    mutated: true,
+    deletedRowIndex: rowIndex,
+    trashedFiles: trashedFiles,
+    message: 'Data bersih terhapus dari Google Sheet & Drive.'
   };
-  if (headers.indexOf('isActive') >= 0) {
-    patch.isActive = false;
-  }
-  // Skip stale expectedUpdatedAt rejection on active soft-delete to eliminate delete collisions
-  return updateRowCellsById_(sheet, schemaName, id, patch, null);
 }
 
 function writeAuditLog_(ss, actor, action, entity, entityId, details) {
@@ -2869,7 +3033,7 @@ function handleUploadPhoto_(ss, payload, actor) {
     return { success: false, mutated: false, error: driveRes.error };
   }
 
-  var base64Input = String(payload.base64Data || '');
+  var base64Input = String(payload.base64Data || payload.dataUrl || '');
   if (!base64Input) {
     return { success: false, mutated: false, error: 'Data gambar base64 kosong.' };
   }
@@ -2888,18 +3052,37 @@ function handleUploadPhoto_(ss, payload, actor) {
   } catch (decodeErr) {
     return { success: false, mutated: false, error: 'Format base64 foto tidak valid.' };
   }
-  var ext = mimeType.indexOf('png') >= 0 ? 'png' : 'jpg';
+
+  var ext = 'jpg';
+  if (mimeType.indexOf('png') >= 0) ext = 'png';
+  else if (mimeType.indexOf('webp') >= 0) ext = 'webp';
+  else if (mimeType.indexOf('svg') >= 0) ext = 'svg';
+  else if (mimeType.indexOf('gif') >= 0) ext = 'gif';
+
+  var purpose = String(payload.purpose || 'face').toLowerCase();
+  var isCardOrSchoolAsset =
+    purpose === 'card_asset' ||
+    purpose === 'school_logo' ||
+    purpose === 'logo' ||
+    purpose === 'signature' ||
+    purpose === 'watermark' ||
+    purpose === 'qr' ||
+    purpose === 'foundation_watermark' ||
+    purpose === 'foundation_qr' ||
+    (!payload.personId && !payload.targetId && purpose !== 'face');
 
   var targetType = String(payload.targetType || 'student');
   var personType = String(payload.personType || (targetType === 'teacher' ? 'teacher' : 'student'));
   var targetId = String(payload.personId || payload.targetId || '');
-  var purpose = String(payload.purpose || 'face');
 
   var targetFolder = driveRes.studentFaceFolder;
   var neatBaseName = '';
-  var previousFileId = '';
+  var previousFileId = extractDriveFileIdFromRef_(payload.previousFileId || payload.previousUrl || '') || String(payload.previousFileId || '');
+  var trashPreviousExplicit = payload.trashPrevious === true;
 
-  if (personType === 'teacher' && targetId) {
+  if (isCardOrSchoolAsset) {
+    targetFolder = driveRes.cardAssetsFolder;
+  } else if (personType === 'teacher' && targetId) {
     targetFolder = driveRes.teacherFaceFolder;
     var teachers = readActiveRows_(ss, 'Teachers');
     var teacherObj = null;
@@ -2925,7 +3108,7 @@ function handleUploadPhoto_(ss, payload, actor) {
       }
     }
     if (studentObj) {
-      previousFileId = String(studentObj.photoFileId || '');
+      if (!previousFileId) previousFileId = String(studentObj.photoFileId || '');
       var classes = readActiveRows_(ss, 'Classes');
       var clsName = '';
       for (var ci = 0; ci < classes.length; ci++) {
@@ -2942,7 +3125,7 @@ function handleUploadPhoto_(ss, payload, actor) {
   }
 
   // Fallback check on FaceTemplates for previous photoFileId to replace cleanly
-  if (targetId) {
+  if (!isCardOrSchoolAsset && targetId) {
     var faceRows = readActiveRows_(ss, 'FaceTemplates');
     for (var fi = 0; fi < faceRows.length; fi++) {
       if (String(faceRows[fi].personId) === targetId && String(faceRows[fi].personType || 'student') === personType) {
@@ -2954,32 +3137,30 @@ function handleUploadPhoto_(ss, payload, actor) {
     }
   }
 
-  var safeRawFileName = sanitizeDriveName_(String(payload.fileName || '').replace(/\.(jpg|jpeg|png)$/i, ''));
-  var finalFileName = (neatBaseName || safeRawFileName || ('Wajah_' + (targetId || Date.now()))) + '.' + ext;
+  var safeRawFileName = sanitizeDriveName_(String(payload.fileName || '').replace(/\.(jpg|jpeg|png|webp|svg|gif)$/i, ''));
+  var defaultAssetName = (isCardOrSchoolAsset ? ('Aset_' + purpose + '_' + Date.now()) : ('Wajah_' + (targetId || Date.now())));
+  var finalFileName = (neatBaseName || safeRawFileName || defaultAssetName) + (isCardOrSchoolAsset ? ('_' + String(Date.now()).slice(-6)) : '') + '.' + ext;
 
-  // Trash duplicate files with exact same name in target subfolder
-  try {
-    var sameNameFiles = targetFolder.getFilesByName(finalFileName);
-    while (sameNameFiles.hasNext()) {
-      sameNameFiles.next().setTrashed(true);
-    }
-  } catch (dupErr) {}
-
-  // Trash previous photo version if it exists and had a different name
-  if (previousFileId) {
+  // Trash duplicate exact-name files for student/teacher face photos
+  if (!isCardOrSchoolAsset) {
     try {
-      var prevFile = DriveApp.getFileById(previousFileId);
-      if (!prevFile.isTrashed()) {
-        prevFile.setTrashed(true);
+      var sameNameFiles = targetFolder.getFilesByName(finalFileName);
+      while (sameNameFiles.hasNext()) {
+        sameNameFiles.next().setTrashed(true);
       }
-    } catch (prevErr) {}
+    } catch (dupErr) {}
+  }
+
+  // Trash previous photo version if replacing a student/teacher photo or explicit draft asset
+  if (previousFileId && (!isCardOrSchoolAsset || trashPreviousExplicit)) {
+    trashDriveFileSafely_(previousFileId);
   }
 
   var blob = Utilities.newBlob(bytes, mimeType, finalFileName);
   var file = targetFolder.createFile(blob);
   var fileId = file.getId();
 
-  if (personType === 'student' && targetId) {
+  if (!isCardOrSchoolAsset && personType === 'student' && targetId) {
     var stdSheet = ss.getSheetByName('Students');
     updateRowCellsById_(stdSheet, 'Students', targetId, {
       photoFileId: fileId,
@@ -2988,7 +3169,7 @@ function handleUploadPhoto_(ss, payload, actor) {
     });
   }
 
-  if (targetId) {
+  if (!isCardOrSchoolAsset && targetId) {
     var faceSheet = ss.getSheetByName('FaceTemplates');
     var allFaces = readActiveRows_(ss, 'FaceTemplates');
     for (var fIdx = 0; fIdx < allFaces.length; fIdx++) {
@@ -3005,10 +3186,10 @@ function handleUploadPhoto_(ss, payload, actor) {
   writeAuditLog_(
     ss,
     actor,
-    'UPLOAD_PHOTO',
-    personType === 'student' ? 'Students' : 'Teachers',
+    isCardOrSchoolAsset ? 'UPLOAD_ASSET' : 'UPLOAD_PHOTO',
+    isCardOrSchoolAsset ? 'Settings' : (personType === 'student' ? 'Students' : 'Teachers'),
     targetId || fileId,
-    'Simpan foto rapi ke Drive "' + targetFolder.getName() + '/' + finalFileName + '" (ID: ' + fileId + ')'
+    'Simpan gambar ke Drive "' + targetFolder.getName() + '/' + finalFileName + '" (ID: ' + fileId + ')'
   );
 
   return {
@@ -3017,16 +3198,46 @@ function handleUploadPhoto_(ss, payload, actor) {
     fileName: finalFileName,
     folderName: targetFolder.getName(),
     photoUrl: 'gas-photo://' + fileId,
-    message: 'Foto wajah "' + finalFileName + '" berhasil disimpan ke folder "' + targetFolder.getName() + '".'
+    message: 'Gambar "' + finalFileName + '" berhasil disimpan ke folder Drive "' + targetFolder.getName() + '".'
+  };
+}
+
+function handleDeletePhoto_(ss, payload, actor) {
+  var targetFileId = extractDriveFileIdFromRef_(payload.fileId || payload.photoUrl || '') || String(payload.fileId || '').trim();
+  if (!targetFileId) {
+    return { success: false, mutated: false, error: 'Parameter fileId atau URL foto Drive wajib diisi.' };
+  }
+  var trashed = trashDriveFileSafely_(targetFileId);
+
+  if (payload.entity && payload.id && payload.field && SHEET_SCHEMAS[payload.entity]) {
+    var sheet = ss.getSheetByName(String(payload.entity));
+    if (sheet) {
+      var patch = { updatedBy: actor };
+      patch[String(payload.field)] = '';
+      if (payload.entity === 'Students' && String(payload.field) === 'photoUrl') {
+        patch.photoFileId = '';
+      }
+      updateRowCellsById_(sheet, String(payload.entity), String(payload.id), patch, null);
+    }
+  }
+
+  writeAuditLog_(ss, actor, 'DELETE_PHOTO', String(payload.entity || 'Drive'), targetFileId, 'Hapus file gambar dari Google Drive (ID: ' + targetFileId + ')');
+  return {
+    success: true,
+    mutated: true,
+    deletedFileId: targetFileId,
+    trashed: trashed,
+    message: 'Gambar berhasil dihapus dari Google Drive.'
   };
 }
 
 function handleGetPhoto_(fileId) {
-  if (!fileId) {
+  var cleanId = extractDriveFileIdFromRef_(fileId) || String(fileId || '').trim();
+  if (!cleanId) {
     return { success: false, error: 'Parameter fileId wajib diisi.' };
   }
   try {
-    var file = DriveApp.getFileById(String(fileId).trim());
+    var file = DriveApp.getFileById(cleanId);
     if (file.isTrashed()) {
       return { success: false, error: 'File foto sudah dihapus.' };
     }
@@ -3048,9 +3259,26 @@ function handleGetPhoto_(fileId) {
 // GENERIC CRUD & SETTINGS & BULK & PROMOTE
 // ============================================================================
 
+function collectSettingsAssetIds_(settingsRow) {
+  if (!settingsRow) return [];
+  var fields = ['schoolLogo', 'foundationWatermarkUrl', 'foundationQrCodeUrl', 'levelConfigsJson'];
+  var map = {};
+  for (var i = 0; i < fields.length; i++) {
+    var val = settingsRow[fields[i]];
+    if (!val) continue;
+    var ids = collectDriveFileIdsFromString_(String(val));
+    for (var j = 0; j < ids.length; j++) {
+      map[ids[j]] = true;
+    }
+  }
+  return Object.keys(map);
+}
+
 function handleUpdateSettings_(ss, data, actor) {
   var sheet = ss.getSheetByName('Settings');
   var rows = readActiveRows_(ss, 'Settings');
+  var prevSettings = rows.length > 0 ? rows[0] : {};
+  var prevAssetIds = collectSettingsAssetIds_(prevSettings);
   var targetId = rows.length > 0 ? rows[0].id : 'settings-default';
 
   var patch = { updatedBy: actor };
@@ -3074,12 +3302,35 @@ function handleUpdateSettings_(ss, data, actor) {
   var upd = updateRowCellsById_(sheet, 'Settings', targetId, patch, data.expectedUpdatedAt);
   if (!upd.success) return { success: false, mutated: false, conflict: upd.conflict, error: upd.error };
 
-  writeAuditLog_(ss, actor, 'UPDATE', 'Settings', targetId, 'Perbarui pengaturan sekolah');
   var updatedRows = readActiveRows_(ss, 'Settings');
+  var nextSettingsRaw = updatedRows.length > 0 ? updatedRows[0] : {};
+  var nextAssetSet = {};
+  var nextAssetIds = collectSettingsAssetIds_(nextSettingsRaw);
+  for (var na = 0; na < nextAssetIds.length; na++) {
+    nextAssetSet[nextAssetIds[na]] = true;
+  }
+
+  // Delete orphaned logo/signature/watermark/QR files from Drive if removed/replaced
+  var trashedOrphans = 0;
+  for (var pa = 0; pa < prevAssetIds.length; pa++) {
+    if (!nextAssetSet[prevAssetIds[pa]]) {
+      if (trashDriveFileSafely_(prevAssetIds[pa])) trashedOrphans++;
+    }
+  }
+
+  writeAuditLog_(
+    ss,
+    actor,
+    'UPDATE',
+    'Settings',
+    targetId,
+    'Perbarui pengaturan sekolah' + (trashedOrphans > 0 ? (' (' + trashedOrphans + ' gambar lama dihapus dari Drive)') : '')
+  );
   return {
     success: true,
     data: updatedRows.length > 0 ? formatSettingsRow_(updatedRows[0]) : formatSettingsRow_({}),
-    message: 'Pengaturan berhasil disimpan ke Google Sheets.'
+    trashedOrphans: trashedOrphans,
+    message: 'Pengaturan berhasil disimpan ke Google Sheets & Google Drive.'
   };
 }
 
@@ -3440,6 +3691,49 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
   return { success: true, changedCount: res.changedCount, diubah_pada: res.diubah_pada, message: 'Data berhasil diperbarui.' };
 }
 
+function deleteMatchingFaceTemplatesAndDrive_(ss, personId, personTypeFilter) {
+  var faceSheet = ss.getSheetByName('FaceTemplates');
+  if (!faceSheet || faceSheet.getLastRow() <= 1) return 0;
+  var headers = getHeaders_(faceSheet, 'FaceTemplates');
+  var vals = faceSheet.getRange(2, 1, faceSheet.getLastRow() - 1, headers.length).getValues();
+  var pidCol = headers.indexOf('personId');
+  var ptypeCol = headers.indexOf('personType');
+  if (pidCol < 0) return 0;
+
+  var trashedCount = 0;
+  for (var r = vals.length - 1; r >= 0; r--) {
+    var rowPid = String(vals[r][pidCol] || '');
+    var rowPtype = ptypeCol >= 0 ? String(vals[r][ptypeCol] || 'student') : 'student';
+    if (rowPid === String(personId) && (!personTypeFilter || rowPtype === personTypeFilter)) {
+      var driveIds = collectRowDriveIds_(headers, vals[r]);
+      for (var d = 0; d < driveIds.length; d++) {
+        if (trashDriveFileSafely_(driveIds[d])) trashedCount++;
+      }
+      faceSheet.deleteRow(r + 2);
+    }
+  }
+  return trashedCount;
+}
+
+function sweepLegacyDeletedRowsOnSheet_(sheet, schemaName) {
+  if (!sheet || sheet.getLastRow() <= 1) return 0;
+  var headers = getHeaders_(sheet, schemaName);
+  var statusCol = headers.indexOf('status');
+  if (statusCol < 0) return 0;
+  var vals = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
+  var trashed = 0;
+  for (var r = vals.length - 1; r >= 0; r--) {
+    if (String(vals[r][statusCol] || '').toLowerCase() === 'dihapus') {
+      var driveIds = collectRowDriveIds_(headers, vals[r]);
+      for (var d = 0; d < driveIds.length; d++) {
+        if (trashDriveFileSafely_(driveIds[d])) trashed++;
+      }
+      sheet.deleteRow(r + 2);
+    }
+  }
+  return trashed;
+}
+
 function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
   if (!SHEET_SCHEMAS[entity]) {
     return { success: false, mutated: false, error: 'Entitas tidak dikenal: ' + entity };
@@ -3459,23 +3753,103 @@ function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
       }
     }
   }
+
   var sheet = ss.getSheetByName(entity);
-  var res = softDeleteRowById_(sheet, entity, id, expectedUpdatedAt, actor);
-  if (!res.success) {
-    return { success: false, mutated: false, conflict: res.conflict, error: res.error };
+  if (!sheet) {
+    return { success: false, mutated: false, error: 'Sheet "' + entity + '" tidak ditemukan.' };
   }
-  if (res.alreadyDeleted) {
-    return { success: true, mutated: false, alreadyDeleted: true, message: res.message || 'Data sudah terhapus.' };
+
+  // Inspect target row before deletion for cascading cleanup
+  var rowIndex = findRowById_(sheet, id);
+  if (rowIndex === -1) {
+    sweepLegacyDeletedRowsOnSheet_(sheet, entity);
+    return { success: true, mutated: false, alreadyDeleted: true, message: 'Data sudah tidak ada atau sudah terhapus.' };
   }
+  var headers = getHeaders_(sheet, entity);
+  var rowVals = sheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
+  var rowMap = {};
+  for (var hc = 0; hc < headers.length; hc++) {
+    if (headers[hc]) rowMap[headers[hc]] = rowVals[hc];
+  }
+
+  var totalTrashed = 0;
+
+  if (entity === 'Students') {
+    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'student');
+  } else if (entity === 'Teachers') {
+    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'teacher');
+  } else if (entity === 'FaceTemplates') {
+    var fPid = String(rowMap.personId || '').trim();
+    var fPtype = String(rowMap.personType || 'student');
+    var fPhotoId = String(rowMap.photoFileId || '').trim();
+    if (fPid && fPtype === 'student') {
+      var stdSheet = ss.getSheetByName('Students');
+      if (stdSheet) {
+        var stdIdx = findRowById_(stdSheet, fPid);
+        if (stdIdx > 0) {
+          var stdHeaders = getHeaders_(stdSheet, 'Students');
+          var stdVals = stdSheet.getRange(stdIdx, 1, 1, stdHeaders.length).getValues()[0];
+          var pIdCol = stdHeaders.indexOf('photoFileId');
+          var pUrlCol = stdHeaders.indexOf('photoUrl');
+          var existingStdFileId = pIdCol >= 0 ? String(stdVals[pIdCol] || '').trim() : '';
+          var existingStdUrlId = pUrlCol >= 0 ? extractDriveFileIdFromRef_(stdVals[pUrlCol]) : '';
+          if (existingStdFileId && existingStdFileId !== fPhotoId && trashDriveFileSafely_(existingStdFileId)) totalTrashed++;
+          if (existingStdUrlId && existingStdUrlId !== fPhotoId && existingStdUrlId !== existingStdFileId && trashDriveFileSafely_(existingStdUrlId)) totalTrashed++;
+          updateRowCellsById_(stdSheet, 'Students', fPid, {
+            photoFileId: '',
+            photoUrl: '',
+            updatedBy: actor
+          }, null);
+        }
+      }
+    }
+  }
+
+  var delRes = softDeleteRowById_(sheet, entity, id, expectedUpdatedAt, actor);
+  if (!delRes.success) {
+    return { success: false, mutated: false, conflict: delRes.conflict, error: delRes.error };
+  }
+  totalTrashed += (delRes.trashedFiles || 0);
+  totalTrashed += sweepLegacyDeletedRowsOnSheet_(sheet, entity);
 
   if (entity === 'Students') {
     syncSingleStudentInLevelSheets_(ss, id, true);
   } else if (entity === 'Classes') {
     syncStudentLevelSheets_(ss);
+  } else if (entity === 'Sessions') {
+    var deletedSheetName = String(rowMap.sheetName || '').trim();
+    if (deletedSheetName && !SHEET_SCHEMAS[deletedSheetName] && ss.getSheets().length > 1) {
+      var otherSessions = readActiveRows_(ss, 'Sessions');
+      var stillInUse = false;
+      for (var os = 0; os < otherSessions.length; os++) {
+        if (String(otherSessions[os].sheetName || '').trim() === deletedSheetName) {
+          stillInUse = true;
+          break;
+        }
+      }
+      if (!stillInUse) {
+        var sesSheet = ss.getSheetByName(deletedSheetName);
+        if (sesSheet) {
+          try { ss.deleteSheet(sesSheet); } catch (delSesErr) {}
+        }
+      }
+    }
   }
 
-  writeAuditLog_(ss, actor, 'SOFT_DELETE', entity, id, 'Soft delete (status = dihapus) pada ' + entity);
-  return { success: true, message: 'Data berhasil dihapus (soft delete).' };
+  writeAuditLog_(
+    ss,
+    actor,
+    'DELETE',
+    entity,
+    id,
+    'Hapus bersih data Sheet & ' + totalTrashed + ' file Drive pada ' + entity
+  );
+  return {
+    success: true,
+    deletedId: id,
+    trashedFiles: totalTrashed,
+    message: 'Data & file gambar/foto terkait berhasil dihapus bersih dari Sheet dan Drive.'
+  };
 }
 
 function handleResetPassword_(ss, id, newPassword, expectedUpdatedAt, actor) {
@@ -3650,7 +4024,7 @@ function handleBulkImportStudents_(ss, rows, defaultClassId, defaultLevel, actor
       for (var ch = 0; ch < clsHeaders.length; ch++) {
         var cKey = clsHeaders[ch];
         var cVal = cObj.hasOwnProperty(cKey) ? cObj[cKey] : '';
-        cRow.push(cVal === undefined || cVal === null ? '' : cVal);
+        cRow.push(prepareCellValueForSheet_(cVal, 'Classes_' + cKey));
       }
       clsMatrix.push(cRow);
     }
@@ -3668,7 +4042,7 @@ function handleBulkImportStudents_(ss, rows, defaultClassId, defaultLevel, actor
       for (var sh = 0; sh < stdHeaders.length; sh++) {
         var sKey = stdHeaders[sh];
         var sVal = sObj.hasOwnProperty(sKey) ? sObj[sKey] : '';
-        sRow.push(sVal === undefined || sVal === null ? '' : sVal);
+        sRow.push(prepareCellValueForSheet_(sVal, 'Students_' + sKey));
       }
       stdMatrix.push(sRow);
     }

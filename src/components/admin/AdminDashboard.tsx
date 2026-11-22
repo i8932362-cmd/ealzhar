@@ -40,7 +40,16 @@ import {
   SessionTargetType,
   EducationLevel,
 } from '../../types/index.ts';
-import { gasGet, gasPost, getWibTodayStr } from '../../lib/api.ts';
+import {
+  gasGet,
+  gasPost,
+  getWibTodayStr,
+  uploadImageAssetToDrive,
+  deleteImageAssetFromDrive,
+  extractDriveFileId,
+} from '../../lib/api.ts';
+import { emitActionToast } from '../../lib/toast.ts';
+import { DriveImage } from '../common/DriveImage.tsx';
 import {
   formatWibTime24,
   formatWibDateTime24,
@@ -121,18 +130,29 @@ export const AdminDashboard: React.FC = () => {
   const [settingsSaved, setSettingsSaved] = useState<boolean>(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
+  const [uploadingSettingAsset, setUploadingSettingAsset] = useState<'schoolLogo' | 'foundationWatermarkUrl' | null>(null);
+  const [deletingSettingAsset, setDeletingSettingAsset] = useState<'schoolLogo' | 'foundationWatermarkUrl' | null>(null);
   const isDirtySettingsRef = useRef<boolean>(false);
 
-  // Floating checkmark notification toast across all admin edits
-  const [savedToast, setSavedToast] = useState<string | null>(null);
+  // Brief header badge state + global z-[200] front-most notifications
+  const [savedBadge, setSavedBadge] = useState<boolean>(false);
   const savedToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const triggerSavedToast = useCallback((msg: string) => {
-    setSavedToast(msg);
+    setSavedBadge(true);
     if (savedToastTimerRef.current) clearTimeout(savedToastTimerRef.current);
     savedToastTimerRef.current = setTimeout(() => {
-      setSavedToast(null);
+      setSavedBadge(false);
     }, 3500);
+    emitActionToast({ type: 'saved', title: 'Tersimpan', message: msg });
+  }, []);
+
+  const triggerDeletedToast = useCallback((msg: string) => {
+    emitActionToast({ type: 'deleted', title: 'Terhapus', message: msg });
+  }, []);
+
+  const triggerErrorToast = useCallback((msg: string) => {
+    emitActionToast({ type: 'error', title: 'Gagal', message: msg });
   }, []);
 
   useEffect(() => {
@@ -157,6 +177,86 @@ export const AdminDashboard: React.FC = () => {
     setSettingsForm((prev) => ({ ...prev, [key]: value }));
   };
 
+  // Upload Logo Sekolah / Watermark Global directly into Google Drive folder 04_Logo_TTD_dan_Aset_Kartu & save to Sheets
+  const handleUploadSettingAsset = async (
+    field: 'schoolLogo' | 'foundationWatermarkUrl',
+    file: File
+  ) => {
+    if (uploadingSettingAsset || deletingSettingAsset) return;
+    setUploadingSettingAsset(field);
+    setSettingsError(null);
+    setSettingsSaved(false);
+    try {
+      const up = await uploadImageAssetToDrive(file, {
+        purpose: field === 'schoolLogo' ? 'school_logo' : 'foundation_watermark',
+        previousUrl: String(settingsForm[field] || ''),
+        trashPrevious: true,
+      });
+      const nextForm: Partial<SchoolSettings> = {
+        ...settingsForm,
+        [field]: up.photoUrl,
+      };
+      const ok = await updateSettings(nextForm);
+      if (ok) {
+        isDirtySettingsRef.current = false;
+        setSettingsForm(nextForm);
+        setSettingsSaved(true);
+        const label = field === 'schoolLogo' ? 'Logo sekolah' : 'Watermark global kartu';
+        triggerSavedToast(`${label} berhasil diupload ke Google Drive & tersimpan di Sheets.`);
+        setTimeout(() => setSettingsSaved(false), 3500);
+      } else {
+        const errMsg = 'Gambar terunggah ke Drive, namun gagal menyimpan tautan ke Google Sheets.';
+        setSettingsError(errMsg);
+        triggerErrorToast(errMsg);
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Gagal mengunggah gambar ke Google Drive.';
+      setSettingsError(errMsg);
+      triggerErrorToast(errMsg);
+    } finally {
+      setUploadingSettingAsset(null);
+    }
+  };
+
+  // Delete Logo Sekolah / Watermark Global from BOTH Google Drive & Google Sheets
+  const handleDeleteSettingAsset = async (field: 'schoolLogo' | 'foundationWatermarkUrl') => {
+    if (uploadingSettingAsset || deletingSettingAsset) return;
+    setDeletingSettingAsset(field);
+    setSettingsError(null);
+    setSettingsSaved(false);
+    try {
+      const curVal = String(settingsForm[field] || '');
+      const fileId = extractDriveFileId(curVal);
+      if (fileId) {
+        const deleted = await deleteImageAssetFromDrive(fileId);
+        if (!deleted) {
+          throw new Error('Gagal menghapus file gambar dari Google Drive.');
+        }
+      }
+      const nextForm: Partial<SchoolSettings> = {
+        ...settingsForm,
+        [field]: '',
+      };
+      const ok = await updateSettings(nextForm);
+      if (ok) {
+        isDirtySettingsRef.current = false;
+        setSettingsForm(nextForm);
+        const label = field === 'schoolLogo' ? 'Logo sekolah' : 'Watermark global kartu';
+        triggerDeletedToast(`${label} berhasil dihapus bersih dari Google Drive & Sheets.`);
+      } else {
+        const errMsg = 'Gagal menghapus referensi gambar dari Google Sheets.';
+        setSettingsError(errMsg);
+        triggerErrorToast(errMsg);
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Gagal menghapus gambar dari Google Drive.';
+      setSettingsError(errMsg);
+      triggerErrorToast(errMsg);
+    } finally {
+      setDeletingSettingAsset(null);
+    }
+  };
+
   // Save Settings (with changed_at conflict protection)
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,10 +272,14 @@ export const AdminDashboard: React.FC = () => {
         triggerSavedToast('Pengaturan sekolah tersimpan ke Google Sheets!');
         setTimeout(() => setSettingsSaved(false), 3500);
       } else {
-        setSettingsError('Gagal memperbarui pengaturan sekolah.');
+        const errMsg = 'Gagal memperbarui pengaturan sekolah.';
+        setSettingsError(errMsg);
+        triggerErrorToast(errMsg);
       }
     } catch (err: any) {
-      setSettingsError(err?.message || 'Gagal menyimpan pengaturan ke Google Sheets.');
+      const errMsg = err?.message || 'Gagal menyimpan pengaturan ke Google Sheets.';
+      setSettingsError(errMsg);
+      triggerErrorToast(errMsg);
     } finally {
       setIsSavingSettings(false);
     }
@@ -274,26 +378,19 @@ export const AdminDashboard: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-3 py-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8">
-      {/* Floating Saved Checkmark Toast */}
-      {savedToast && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed top-20 right-4 z-50 max-w-sm flex items-center gap-2.5 px-4 py-3 rounded-2xl bg-emerald-600 text-white shadow-xl border border-emerald-400/50 animate-in fade-in slide-in-from-top-2"
-        >
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-white" />
-          <div className="text-xs font-bold leading-snug">
-            <span className="block uppercase tracking-wider text-[10px] text-emerald-100">Tersimpan</span>
-            <span>{savedToast}</span>
-          </div>
-        </div>
-      )}
-
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
         <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-bold text-xl shadow-md flex-shrink-0">
-            <Shield className="w-6 h-6 text-blue-400" />
+          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-bold text-xl shadow-md flex-shrink-0 overflow-hidden">
+            {settings?.schoolLogo ? (
+              <DriveImage
+                src={settings.schoolLogo}
+                alt={settings.schoolName || 'Logo Sekolah'}
+                className="w-full h-full object-contain bg-white p-1"
+              />
+            ) : (
+              <Shield className="w-6 h-6 text-blue-400" />
+            )}
           </div>
           <div className="min-w-0">
             <h1 className="text-lg sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
@@ -312,7 +409,7 @@ export const AdminDashboard: React.FC = () => {
               <span>Menyimpan...</span>
             </span>
           )}
-          {(saveStatus === 'saved' || settingsSaved || Boolean(savedToast)) && !isSavingSettings && (
+          {(saveStatus === 'saved' || settingsSaved || savedBadge) && !isSavingSettings && (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Tersimpan</span>
@@ -370,6 +467,8 @@ export const AdminDashboard: React.FC = () => {
             wibNowHhMm={wibNowHhMm}
             onRefresh={handleDataMutated}
             onSavedToast={triggerSavedToast}
+            onDeletedToast={triggerDeletedToast}
+            onErrorToast={triggerErrorToast}
           />
 
           {/* Card 2: School System Settings */}
@@ -450,17 +549,129 @@ export const AdminDashboard: React.FC = () => {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Watermark Background Kartu (Global URL / Data Image)
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Logo Utama Sekolah / Yayasan (Tersimpan di Google Drive)
                 </label>
-                <input
-                  type="text"
-                  value={settingsForm.foundationWatermarkUrl || ''}
-                  onChange={e => updateSettingsField('foundationWatermarkUrl', e.target.value)}
-                  placeholder="https://... atau upload via tab Cetak Kartu"
-                  className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                />
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {settingsForm.schoolLogo ? (
+                    <DriveImage
+                      src={settingsForm.schoolLogo}
+                      alt="Logo Sekolah"
+                      className="w-11 h-11 rounded-xl object-contain bg-white border border-slate-200 p-1 flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-white dark:bg-slate-900 border border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center text-[10px] text-slate-400 flex-shrink-0">
+                      Kosong
+                    </div>
+                  )}
+                  <label className="flex-1 min-w-[140px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer transition">
+                    {uploadingSettingAsset === 'schoolLogo' ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Mengupload ke Drive...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload Logo Sekolah</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={Boolean(uploadingSettingAsset || deletingSettingAsset)}
+                      onChange={e => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleUploadSettingAsset('schoolLogo', f);
+                        e.target.value = '';
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                  {settingsForm.schoolLogo && (
+                    <button
+                      type="button"
+                      disabled={Boolean(uploadingSettingAsset || deletingSettingAsset)}
+                      onClick={() => void handleDeleteSettingAsset('schoolLogo')}
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-bold transition disabled:opacity-60"
+                      title="Hapus logo dari Google Drive & Sheets"
+                    >
+                      {deletingSettingAsset === 'schoolLogo' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                      <span>Hapus</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="sm:col-span-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2.5">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Watermark Background Kartu Global (Tersimpan di Google Drive)
+                </label>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {settingsForm.foundationWatermarkUrl ? (
+                    <DriveImage
+                      src={settingsForm.foundationWatermarkUrl}
+                      alt="Watermark Global"
+                      className="w-11 h-11 rounded-xl object-contain bg-white border border-slate-200 p-1 flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-white dark:bg-slate-900 border border-dashed border-slate-300 dark:border-slate-600 flex items-center justify-center text-[10px] text-slate-400 flex-shrink-0">
+                      Kosong
+                    </div>
+                  )}
+                  <label className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold cursor-pointer transition">
+                    {uploadingSettingAsset === 'foundationWatermarkUrl' ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Mengupload ke Drive...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload Watermark ke Drive</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={Boolean(uploadingSettingAsset || deletingSettingAsset)}
+                      onChange={e => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleUploadSettingAsset('foundationWatermarkUrl', f);
+                        e.target.value = '';
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                  {settingsForm.foundationWatermarkUrl && (
+                    <button
+                      type="button"
+                      disabled={Boolean(uploadingSettingAsset || deletingSettingAsset)}
+                      onClick={() => void handleDeleteSettingAsset('foundationWatermarkUrl')}
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-bold transition disabled:opacity-60"
+                      title="Hapus watermark dari Google Drive & Sheets"
+                    >
+                      {deletingSettingAsset === 'foundationWatermarkUrl' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                      <span>Hapus</span>
+                    </button>
+                  )}
+                  <input
+                    type="text"
+                    value={settingsForm.foundationWatermarkUrl || ''}
+                    onChange={e => updateSettingsField('foundationWatermarkUrl', e.target.value)}
+                    placeholder="Atau tempel URL / referensi gas-photo://..."
+                    className="flex-1 min-w-[200px] px-3.5 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                </div>
               </div>
 
               <TimeInput24h
@@ -602,6 +813,8 @@ export const AdminDashboard: React.FC = () => {
           currentUserId={user?.id}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
+          onDeletedToast={triggerDeletedToast}
+          onErrorToast={triggerErrorToast}
         />
       )}
 
@@ -614,6 +827,8 @@ export const AdminDashboard: React.FC = () => {
           faceTemplates={faceTemplates}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
+          onDeletedToast={triggerDeletedToast}
+          onErrorToast={triggerErrorToast}
         />
       )}
 
@@ -623,6 +838,8 @@ export const AdminDashboard: React.FC = () => {
           locations={locations}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
+          onDeletedToast={triggerDeletedToast}
+          onErrorToast={triggerErrorToast}
         />
       )}
 
@@ -634,6 +851,8 @@ export const AdminDashboard: React.FC = () => {
           students={students}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
+          onDeletedToast={triggerDeletedToast}
+          onErrorToast={triggerErrorToast}
         />
       )}
 
@@ -644,6 +863,8 @@ export const AdminDashboard: React.FC = () => {
           classes={classes}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
+          onDeletedToast={triggerDeletedToast}
+          onErrorToast={triggerErrorToast}
         />
       )}
 
@@ -654,6 +875,7 @@ export const AdminDashboard: React.FC = () => {
           onDownloadTemplate={handleDownloadTemplate}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
+          onErrorToast={triggerErrorToast}
         />
       )}
 
@@ -734,7 +956,18 @@ const SessionManagementCard: React.FC<{
   wibNowHhMm: string;
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ sessions, activeStudentSession, activeTeacherSession, wibNowHhMm, onRefresh, onSavedToast }) => {
+  onDeletedToast?: (msg: string) => void;
+  onErrorToast?: (msg: string) => void;
+}> = ({
+  sessions,
+  activeStudentSession,
+  activeTeacherSession,
+  wibNowHhMm,
+  onRefresh,
+  onSavedToast,
+  onDeletedToast,
+  onErrorToast,
+}) => {
   const [roleTab, setRoleTab] = useState<SessionTargetType>('student');
   const [editingSession, setEditingSession] = useState<AttendanceSession | null>(null);
   const [showForm, setShowForm] = useState<boolean>(false);
@@ -856,10 +1089,14 @@ const SessionManagementCard: React.FC<{
         setFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan sesi presensi.' });
+        const errMsg = res.error || 'Gagal menyimpan sesi presensi.';
+        setFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (err: any) {
-      setFeedback({ type: 'error', text: err?.message || 'Gagal menyimpan sesi presensi.' });
+      const errMsg = err?.message || 'Gagal menyimpan sesi presensi.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsSaving(false);
     }
@@ -878,14 +1115,18 @@ const SessionManagementCard: React.FC<{
         await onRefresh();
         const deletedName = deleteTarget.name;
         setDeleteTarget(null);
-        const msg = `Sesi "${deletedName}" telah dihapus.`;
+        const msg = `Sesi "${deletedName}" & sheet-nya telah dihapus.`;
         setFeedback({ type: 'success', text: msg });
-        onSavedToast?.(msg);
+        onDeletedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal menghapus sesi.' });
+        const errMsg = res.error || 'Gagal menghapus sesi.';
+        setFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (err: any) {
-      setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus sesi.' });
+      const errMsg = err?.message || 'Gagal menghapus sesi.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsDeleting(false);
     }
@@ -1248,7 +1489,18 @@ const FaceDatabaseSection: React.FC<{
   faceTemplates: FaceTemplate[];
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ students, classes, teachers, faceTemplates, onRefresh, onSavedToast }) => {
+  onDeletedToast?: (msg: string) => void;
+  onErrorToast?: (msg: string) => void;
+}> = ({
+  students,
+  classes,
+  teachers,
+  faceTemplates,
+  onRefresh,
+  onSavedToast,
+  onDeletedToast,
+  onErrorToast,
+}) => {
   const [selectedPersonType, setSelectedPersonType] = useState<'student' | 'teacher'>('student');
   const [selectedPersonId, setSelectedPersonId] = useState<string>('');
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
@@ -1413,10 +1665,14 @@ const FaceDatabaseSection: React.FC<{
         });
         onSavedToast?.(msg);
       } else {
-        setMessage({ type: 'error', text: res.error || 'Gagal menyimpan template wajah.' });
+        const errMsg = res.error || 'Gagal menyimpan template wajah.';
+        setMessage({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (err: any) {
-      setMessage({ type: 'error', text: err?.message || 'Gagal menyimpan template wajah.' });
+      const errMsg = err?.message || 'Gagal menyimpan template wajah.';
+      setMessage({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     }
   };
 
@@ -1756,19 +2012,25 @@ const FaceDatabaseSection: React.FC<{
           if (!deleteTarget) return;
           setIsDeleting(true);
           try {
-            await gasPost('softDeleteRecord', {
+            const res = await gasPost('softDeleteRecord', {
               entity: 'FaceTemplates',
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.updatedAt,
             });
+            if (!res?.success) {
+              throw new Error(res?.error || 'Gagal menghapus data wajah di server.');
+            }
             await onRefresh();
-            const msg = `Data wajah ${deleteTarget.name} berhasil dihapus.`;
+            const deletedName = deleteTarget.name;
+            setDeleteTarget(null);
+            const msg = `Data wajah & foto Drive milik ${deletedName} berhasil dihapus.`;
             setMessage({ type: 'success', text: msg });
-            setDeleteTarget(null);
-            onSavedToast?.(msg);
+            onDeletedToast?.(msg);
           } catch (err: any) {
-            setMessage({ type: 'error', text: err?.message || 'Gagal menghapus data wajah.' });
+            const errMsg = err?.message || 'Gagal menghapus data wajah.';
+            setMessage({ type: 'error', text: errMsg });
             setDeleteTarget(null);
+            onErrorToast?.(errMsg);
           } finally {
             setIsDeleting(false);
           }
@@ -1786,7 +2048,18 @@ const UserManagementSection: React.FC<{
   currentUserId?: string;
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ users, classes, activeUsers, currentUserId, onRefresh, onSavedToast }) => {
+  onDeletedToast?: (msg: string) => void;
+  onErrorToast?: (msg: string) => void;
+}> = ({
+  users,
+  classes,
+  activeUsers,
+  currentUserId,
+  onRefresh,
+  onSavedToast,
+  onDeletedToast,
+  onErrorToast,
+}) => {
   const [showModal, setShowModal] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -1884,10 +2157,14 @@ const UserManagementSection: React.FC<{
         setUserFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setUserFeedback({ type: 'error', text: res.error || 'Gagal membuat pengguna' });
+        const errMsg = res.error || 'Gagal membuat pengguna';
+        setUserFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setUserFeedback({ type: 'error', text: e.message || 'Gagal membuat pengguna' });
+      const errMsg = e.message || 'Gagal membuat pengguna';
+      setUserFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsSavingUser(false);
     }
@@ -1938,10 +2215,14 @@ const UserManagementSection: React.FC<{
         setUserFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setUserFeedback({ type: 'error', text: res.error || 'Gagal menyimpan perubahan akun.' });
+        const errMsg = res.error || 'Gagal menyimpan perubahan akun.';
+        setUserFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setUserFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan perubahan akun.' });
+      const errMsg = e?.message || 'Gagal menyimpan perubahan akun.';
+      setUserFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsSavingUser(false);
     }
@@ -1968,10 +2249,14 @@ const UserManagementSection: React.FC<{
         setUserFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setUserFeedback({ type: 'error', text: res.error || 'Gagal memperbarui status pengguna.' });
+        const errMsg = res.error || 'Gagal memperbarui status pengguna.';
+        setUserFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setUserFeedback({ type: 'error', text: e.message || 'Gagal memperbarui status pengguna.' });
+      const errMsg = e.message || 'Gagal memperbarui status pengguna.';
+      setUserFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setTogglingUserId(null);
     }
@@ -1996,14 +2281,18 @@ const UserManagementSection: React.FC<{
         await onRefresh();
         const deletedName = deleteUserTarget.name;
         setDeleteUserTarget(null);
-        const msg = `Akun "${deletedName}" berhasil dihapus.`;
+        const msg = `Akun "${deletedName}" berhasil dihapus bersih dari Sheets.`;
         setUserFeedback({ type: 'success', text: msg });
-        onSavedToast?.(msg);
+        onDeletedToast?.(msg);
       } else {
-        setUserFeedback({ type: 'error', text: res.error || 'Gagal menghapus pengguna.' });
+        const errMsg = res.error || 'Gagal menghapus pengguna.';
+        setUserFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setUserFeedback({ type: 'error', text: e.message || 'Gagal menghapus pengguna.' });
+      const errMsg = e.message || 'Gagal menghapus pengguna.';
+      setUserFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsDeletingUser(false);
     }
@@ -2032,10 +2321,14 @@ const UserManagementSection: React.FC<{
         setUserFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setUserFeedback({ type: 'error', text: res.error || 'Gagal mereset kata sandi.' });
+        const errMsg = res.error || 'Gagal mereset kata sandi.';
+        setUserFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setUserFeedback({ type: 'error', text: e.message || 'Gagal mereset kata sandi.' });
+      const errMsg = e.message || 'Gagal mereset kata sandi.';
+      setUserFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsResettingPassword(false);
     }
@@ -2524,7 +2817,9 @@ const LocationsSection: React.FC<{
   locations: SchoolLocation[];
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ locations, onRefresh, onSavedToast }) => {
+  onDeletedToast?: (msg: string) => void;
+  onErrorToast?: (msg: string) => void;
+}> = ({ locations, onRefresh, onSavedToast, onDeletedToast, onErrorToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingLocation, setEditingLocation] = useState<SchoolLocation | null>(null);
   const [name, setName] = useState('');
@@ -2607,10 +2902,14 @@ const LocationsSection: React.FC<{
         setFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan lokasi.' });
+        const errMsg = res.error || 'Gagal menyimpan lokasi.';
+        setFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan lokasi.' });
+      const errMsg = e?.message || 'Gagal menyimpan lokasi.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsSaving(false);
     }
@@ -2702,19 +3001,25 @@ const LocationsSection: React.FC<{
           if (!deleteTarget) return;
           setIsDeleting(true);
           try {
-            await gasPost('softDeleteRecord', {
+            const res = await gasPost('softDeleteRecord', {
               entity: 'Locations',
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
             });
+            if (!res?.success) {
+              throw new Error(res?.error || 'Gagal menghapus titik lokasi di server.');
+            }
             await onRefresh();
-            const msg = `Lokasi ${deleteTarget.name} berhasil dihapus.`;
+            const deletedName = deleteTarget.name;
+            setDeleteTarget(null);
+            const msg = `Lokasi ${deletedName} berhasil dihapus dari Sheets.`;
             setFeedback({ type: 'success', text: msg });
-            setDeleteTarget(null);
-            onSavedToast?.(msg);
+            onDeletedToast?.(msg);
           } catch (err: any) {
-            setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus lokasi.' });
+            const errMsg = err?.message || 'Gagal menghapus lokasi.';
+            setFeedback({ type: 'error', text: errMsg });
             setDeleteTarget(null);
+            onErrorToast?.(errMsg);
           } finally {
             setIsDeleting(false);
           }
@@ -2832,7 +3137,9 @@ const ClassesSection: React.FC<{
   students: Student[];
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ classes, teachers, students, onRefresh, onSavedToast }) => {
+  onDeletedToast?: (msg: string) => void;
+  onErrorToast?: (msg: string) => void;
+}> = ({ classes, teachers, students, onRefresh, onSavedToast, onDeletedToast, onErrorToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingClass, setEditingClass] = useState<SchoolClass | null>(null);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
@@ -2913,10 +3220,14 @@ const ClassesSection: React.FC<{
         setFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan kelas.' });
+        const errMsg = res.error || 'Gagal menyimpan kelas.';
+        setFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan kelas.' });
+      const errMsg = e?.message || 'Gagal menyimpan kelas.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsSaving(false);
     }
@@ -2940,10 +3251,14 @@ const ClassesSection: React.FC<{
         setShowPromoteModal(false);
         onSavedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal memproses kenaikan kelas.' });
+        const errMsg = res.error || 'Gagal memproses kenaikan kelas.';
+        setFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setFeedback({ type: 'error', text: e?.message || 'Gagal memproses kenaikan kelas.' });
+      const errMsg = e?.message || 'Gagal memproses kenaikan kelas.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsPromoting(false);
     }
@@ -3057,19 +3372,25 @@ const ClassesSection: React.FC<{
           if (!deleteTarget) return;
           setIsDeleting(true);
           try {
-            await gasPost('softDeleteRecord', {
+            const res = await gasPost('softDeleteRecord', {
               entity: 'Classes',
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
             });
+            if (!res?.success) {
+              throw new Error(res?.error || 'Gagal menghapus kelas di server.');
+            }
             await onRefresh();
-            const msg = `Kelas "${deleteTarget.name}" berhasil dihapus.`;
+            const deletedName = deleteTarget.name;
+            setDeleteTarget(null);
+            const msg = `Kelas "${deletedName}" berhasil dihapus bersih dari Sheets.`;
             setFeedback({ type: 'success', text: msg });
-            setDeleteTarget(null);
-            onSavedToast?.(msg);
+            onDeletedToast?.(msg);
           } catch (err: any) {
-            setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus kelas.' });
+            const errMsg = err?.message || 'Gagal menghapus kelas.';
+            setFeedback({ type: 'error', text: errMsg });
             setDeleteTarget(null);
+            onErrorToast?.(errMsg);
           } finally {
             setIsDeleting(false);
           }
@@ -3283,7 +3604,9 @@ const StudentsSection: React.FC<{
   classes: SchoolClass[];
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ students, classes, onRefresh, onSavedToast }) => {
+  onDeletedToast?: (msg: string) => void;
+  onErrorToast?: (msg: string) => void;
+}> = ({ students, classes, onRefresh, onSavedToast, onDeletedToast, onErrorToast }) => {
   const [search, setSearch] = useState('');
   const [filterLevel, setFilterLevel] = useState<'ALL' | EducationLevel>('ALL');
   const [showModal, setShowModal] = useState(false);
@@ -3389,10 +3712,14 @@ const StudentsSection: React.FC<{
         setFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
-        setFeedback({ type: 'error', text: res.error || 'Gagal menyimpan data siswa.' });
+        const errMsg = res.error || 'Gagal menyimpan data siswa.';
+        setFeedback({ type: 'error', text: errMsg });
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setFeedback({ type: 'error', text: e?.message || 'Gagal menyimpan data siswa.' });
+      const errMsg = e?.message || 'Gagal menyimpan data siswa.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
     } finally {
       setIsSaving(false);
     }
@@ -3544,19 +3871,25 @@ const StudentsSection: React.FC<{
           if (!deleteTarget) return;
           setIsDeleting(true);
           try {
-            await gasPost('softDeleteRecord', {
+            const res = await gasPost('softDeleteRecord', {
               entity: 'Students',
               id: deleteTarget.id,
               expectedUpdatedAt: deleteTarget.diubah_pada || deleteTarget.updatedAt,
             });
+            if (!res?.success) {
+              throw new Error(res?.error || 'Gagal menghapus siswa di server.');
+            }
             await onRefresh();
-            const msg = `Siswa ${deleteTarget.name} berhasil dihapus.`;
+            const deletedName = deleteTarget.name;
+            setDeleteTarget(null);
+            const msg = `Siswa ${deletedName} beserta foto/data wajah Drive telah dihapus bersih.`;
             setFeedback({ type: 'success', text: msg });
-            setDeleteTarget(null);
-            onSavedToast?.(msg);
+            onDeletedToast?.(msg);
           } catch (err: any) {
-            setFeedback({ type: 'error', text: err?.message || 'Gagal menghapus siswa.' });
+            const errMsg = err?.message || 'Gagal menghapus siswa.';
+            setFeedback({ type: 'error', text: errMsg });
             setDeleteTarget(null);
+            onErrorToast?.(errMsg);
           } finally {
             setIsDeleting(false);
           }
@@ -3728,7 +4061,8 @@ const BulkUploadSection: React.FC<{
   onDownloadTemplate: (preferredLevel?: EducationLevel) => void;
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
-}> = ({ classes, onDownloadTemplate, onRefresh, onSavedToast }) => {
+  onErrorToast?: (msg: string) => void;
+}> = ({ classes, onDownloadTemplate, onRefresh, onSavedToast, onErrorToast }) => {
   const [selectedLevel, setSelectedLevel] = useState<EducationLevel>('SMA/MA');
   const [forceSelectedLevel, setForceSelectedLevel] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState(classes[0]?.id || '');
@@ -3803,10 +4137,14 @@ const BulkUploadSection: React.FC<{
         setErrorReport(res.errorRows || []);
         onSavedToast?.(msg);
       } else {
-        setUploadError(res.error || 'Import gagal.');
+        const errMsg = res.error || 'Import gagal.';
+        setUploadError(errMsg);
+        onErrorToast?.(errMsg);
       }
     } catch (e: any) {
-      setUploadError(e?.message || 'Import gagal.');
+      const errMsg = e?.message || 'Import gagal.';
+      setUploadError(errMsg);
+      onErrorToast?.(errMsg);
     } finally {
       setIsProcessing(false);
     }

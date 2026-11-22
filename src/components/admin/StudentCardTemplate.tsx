@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Student, SchoolClass, EducationLevel, LevelConfig } from '../../types/index.ts';
 import { generateBarcodeSvg } from '../../lib/barcodeGenerator.ts';
 import { extractDriveFileId, fetchDrivePhotoDataUrl } from '../../lib/api.ts';
+import { useResolvedDriveImage } from '../common/DriveImage.tsx';
 
 export const DEFAULT_LEVEL_CONFIGS: Record<EducationLevel, LevelConfig> = {
   'SMA/MA': {
@@ -171,6 +172,9 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
   }, [student]);
 
   const activeWatermark = config.watermarkUrl || watermarkUrl;
+  const { resolvedSrc: resolvedWatermark } = useResolvedDriveImage(activeWatermark);
+  const { resolvedSrc: resolvedLogo } = useResolvedDriveImage(config.logoUrl);
+  const { resolvedSrc: resolvedSignature } = useResolvedDriveImage(config.principalSignatureUrl);
 
   return (
     <div
@@ -184,10 +188,10 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
       className="relative rounded-2xl overflow-hidden border-2 border-slate-300 shadow-xl flex flex-col justify-between select-none text-slate-800"
     >
       {/* Dynamic Watermark Background (Auto-adjusting) */}
-      {activeWatermark ? (
+      {resolvedWatermark ? (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden z-0">
           <img
-            src={activeWatermark}
+            src={resolvedWatermark}
             alt="Watermark"
             className="w-56 h-56 object-contain opacity-[0.08] select-none pointer-events-none filter grayscale"
           />
@@ -207,9 +211,9 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
       >
         <div className="flex items-center gap-2.5">
           {/* Custom Uploaded Logo or Default Emblem */}
-          {config.logoUrl ? (
+          {resolvedLogo ? (
             <img
-              src={config.logoUrl}
+              src={resolvedLogo}
               alt="Logo"
               className="w-9 h-9 object-contain rounded-full bg-white p-0.5 border border-amber-300 shadow-xs flex-shrink-0"
             />
@@ -336,9 +340,9 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
                 <FoundationSealSvg color="#047857" />
               </div>
               <div className="relative z-10 flex items-center justify-end">
-                {config.principalSignatureUrl ? (
+                {resolvedSignature ? (
                   <img
-                    src={config.principalSignatureUrl}
+                    src={resolvedSignature}
                     alt={`TTD ${config.principalName}`}
                     className="h-8 max-w-[100px] object-contain select-none pointer-events-none"
                   />
@@ -372,9 +376,16 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
   const activeWatermark = config.watermarkUrl || watermarkUrl;
   const targetWebsite = config.websiteUrl || foundationWebsite || 'https://mambaululum.sch.id';
   const cleanWebsiteUrl = targetWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const { resolvedSrc: resolvedWatermark } = useResolvedDriveImage(activeWatermark);
+  const { resolvedSrc: resolvedLogo } = useResolvedDriveImage(config.logoUrl);
+  const { resolvedSrc: resolvedCustomQr } = useResolvedDriveImage(config.qrCodeUrl);
   
   // Auto QR Code generator link or uploaded custom QR
-  const qrImageSrc = config.qrCodeUrl || `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(targetWebsite)}&bgcolor=ffffff&color=1e3a8a`;
+  const qrImageSrc =
+    resolvedCustomQr ||
+    (!config.qrCodeUrl
+      ? `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(targetWebsite)}&bgcolor=ffffff&color=1e3a8a`
+      : '');
 
   return (
     <div
@@ -388,10 +399,10 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
       className="relative rounded-2xl overflow-hidden border-2 border-slate-300 shadow-xl flex flex-col justify-between select-none text-slate-800 p-3.5"
     >
       {/* Dynamic Watermark Background */}
-      {activeWatermark ? (
+      {resolvedWatermark ? (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden z-0">
           <img
-            src={activeWatermark}
+            src={resolvedWatermark}
             alt="Watermark"
             className="w-56 h-56 object-contain opacity-[0.08] select-none pointer-events-none filter grayscale"
           />
@@ -407,9 +418,9 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
       {/* Header Back Side */}
       <div className="border-b-2 border-slate-200 pb-1.5 flex items-center justify-between relative z-10">
         <div className="flex items-center gap-2">
-          {config.logoUrl ? (
+          {resolvedLogo ? (
             <img
-              src={config.logoUrl}
+              src={resolvedLogo}
               alt="Logo"
               className="w-6 h-6 object-contain rounded-full bg-white p-0.5 border border-slate-300 flex-shrink-0"
             />

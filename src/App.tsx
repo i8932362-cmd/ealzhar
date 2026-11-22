@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext.tsx';
 import { SyncProvider, useSync } from './context/SyncContext.tsx';
 import { Navbar, ActiveTab } from './components/common/Navbar.tsx';
 import { LoginModal } from './components/common/LoginModal.tsx';
+import { GlobalActionToast } from './components/common/GlobalActionToast.tsx';
 import { AttendancePortalView } from './components/portal/AttendancePortalView.tsx';
 import { AuthUser } from './types/index.ts';
 
@@ -111,6 +112,7 @@ function MainApp() {
 
   return (
     <div className="min-h-dvh w-full overflow-x-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-150">
+      <GlobalActionToast />
       <Navbar
         activeTab={activeTab}
         onSelectTab={(tab) => setActiveTab(tab)}

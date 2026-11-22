@@ -261,7 +261,12 @@ async function executeGasPostOnce<T = any>(
   action: string,
   payload: Record<string, any>
 ): Promise<ApiResponse<T>> {
-  const timeoutMs = action === 'bulkImportStudents' || action === 'setupDatabase' ? 45000 : 25000;
+  const timeoutMs =
+    action === 'bulkImportStudents' || action === 'setupDatabase'
+      ? 45000
+      : action === 'uploadPhoto'
+      ? 35000
+      : 25000;
   const res = await fetchWithTimeout(
     url,
     {
@@ -624,6 +629,22 @@ export function extractDriveFileId(photoUrl?: string): string | null {
   return null;
 }
 
+export function primeDrivePhotoCache(fileIdOrUrl: string, dataUrl: string): void {
+  const cleanId = extractDriveFileId(fileIdOrUrl) || String(fileIdOrUrl || '').trim();
+  if (cleanId && dataUrl) {
+    photoCache.set(cleanId, dataUrl);
+  }
+}
+
+export function invalidateDrivePhotoCache(fileIdOrUrl?: string): void {
+  if (!fileIdOrUrl) return;
+  const cleanId = extractDriveFileId(fileIdOrUrl) || String(fileIdOrUrl).trim();
+  if (cleanId) {
+    photoCache.delete(cleanId);
+    inflightPhotoRequests.delete(cleanId);
+  }
+}
+
 export async function fetchDrivePhotoDataUrl(fileId: string): Promise<string | null> {
   if (!fileId || !isGasConfigured()) return null;
   const cached = photoCache.get(fileId);
@@ -647,4 +668,133 @@ export async function fetchDrivePhotoDataUrl(fileId: string): Promise<string | n
 
   inflightPhotoRequests.set(fileId, promise);
   return promise;
+}
+
+async function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Gagal membaca file gambar.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function optimizeImageFileForDrive(
+  file: File,
+  maxDimension = 1280
+): Promise<{ dataUrl: string; mimeType: string }> {
+  const rawDataUrl = await readFileAsDataUrl(file);
+  const mime = (file.type || 'image/png').toLowerCase();
+
+  // Keep SVG as-is or small images <= 380 KB untouched so transparency & sharpness stay 100% lossless
+  if (mime.includes('svg') || rawDataUrl.length <= 520000) {
+    return { dataUrl: rawDataUrl, mimeType: file.type || 'image/png' };
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDimension / Math.max(img.width || 1, img.height || 1));
+      const targetW = Math.max(1, Math.round((img.width || maxDimension) * scale));
+      const targetH = Math.max(1, Math.round((img.height || maxDimension) * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve({ dataUrl: rawDataUrl, mimeType: file.type || 'image/png' });
+        return;
+      }
+
+      const isPngLike = mime.includes('png') || mime.includes('webp');
+      if (!isPngLike) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, targetW, targetH);
+      }
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+
+      const outputMime = isPngLike ? 'image/png' : 'image/jpeg';
+      let out = canvas.toDataURL(outputMime, 0.9);
+      // Fallback to high-quality JPEG if large PNG still > 1.8 MB base64
+      if (isPngLike && out.length > 2400000) {
+        out = canvas.toDataURL('image/png');
+      }
+      resolve({ dataUrl: out, mimeType: outputMime });
+    };
+    img.onerror = () => {
+      resolve({ dataUrl: rawDataUrl, mimeType: file.type || 'image/png' });
+    };
+    img.src = rawDataUrl;
+  });
+}
+
+export async function uploadImageAssetToDrive(
+  file: File,
+  options: {
+    purpose: 'card_asset' | 'school_logo' | 'logo' | 'signature' | 'watermark' | 'qr' | 'foundation_watermark' | 'foundation_qr';
+    fileName?: string;
+    previousUrl?: string;
+    trashPrevious?: boolean;
+  }
+): Promise<{
+  fileId: string;
+  photoUrl: string;
+  dataUrl: string;
+  fileName?: string;
+  folderName?: string;
+}> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('File yang dipilih harus berupa gambar (PNG, JPG, WebP, atau SVG).');
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error('Ukuran file gambar maksimal 10 MB.');
+  }
+
+  const { dataUrl, mimeType } = await optimizeImageFileForDrive(file);
+  const previousFileId = extractDriveFileId(options.previousUrl) || undefined;
+
+  const res = await gasPost<{
+    fileId: string;
+    fileName?: string;
+    folderName?: string;
+    photoUrl?: string;
+  }>('uploadPhoto', {
+    base64Data: dataUrl,
+    mimeType,
+    fileName: options.fileName || file.name,
+    purpose: options.purpose,
+    previousFileId,
+    trashPrevious: Boolean(options.trashPrevious),
+  });
+
+  if (!res.success || !res.fileId) {
+    throw new Error(res.error || 'Gagal mengunggah gambar ke Google Drive.');
+  }
+
+  const photoUrl = res.photoUrl || `gas-photo://${res.fileId}`;
+  primeDrivePhotoCache(res.fileId, dataUrl);
+  if (options.trashPrevious && previousFileId) {
+    invalidateDrivePhotoCache(previousFileId);
+  }
+
+  return {
+    fileId: res.fileId,
+    photoUrl,
+    dataUrl,
+    fileName: res.fileName,
+    folderName: res.folderName,
+  };
+}
+
+export async function deleteImageAssetFromDrive(fileIdOrUrl?: string): Promise<boolean> {
+  if (!fileIdOrUrl) return true;
+  const fileId = extractDriveFileId(fileIdOrUrl);
+  if (!fileId) return true;
+  const res = await gasPost('deletePhoto', { fileId });
+  if (res.success) {
+    invalidateDrivePhotoCache(fileId);
+    return true;
+  }
+  return false;
 }

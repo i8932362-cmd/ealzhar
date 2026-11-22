@@ -33,6 +33,13 @@ import {
   StudentCardBack,
   DEFAULT_LEVEL_CONFIGS,
 } from './StudentCardTemplate.tsx';
+import {
+  uploadImageAssetToDrive,
+  deleteImageAssetFromDrive,
+  extractDriveFileId,
+} from '../../lib/api.ts';
+import { emitActionToast } from '../../lib/toast.ts';
+import { DriveImage, preloadDriveImageUrls } from '../common/DriveImage.tsx';
 
 interface StudentCardManagerProps {
   students: Student[];
@@ -117,6 +124,12 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const [showConfigModal, setShowConfigModal] = useState<boolean>(false);
   const [activeConfigTab, setActiveConfigTab] = useState<EducationLevel>('SMA/MA');
   const [isSavingConfig, setIsSavingConfig] = useState<boolean>(false);
+  const [uploadingField, setUploadingField] = useState<
+    'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
+  >(null);
+  const [deletingField, setDeletingField] = useState<
+    'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
+  >(null);
   const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const isDirtyRef = useRef<boolean>(false);
 
@@ -228,32 +241,125 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     return getClassLevel(c) === selectedLevel;
   });
 
-  // Handle Image File Upload Helper
-  const handleFileUpload = (
+  // Handle Image File Upload Helper -> Direct upload to Google Drive Folder
+  const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
     field: 'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl'
   ) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
-    if (file.size > 2 * 1024 * 1024) {
-      setCardError('Ukuran file maksimal 2 MB');
+    if (file.size > 10 * 1024 * 1024) {
+      const errMsg = 'Ukuran file maksimal 10 MB.';
+      setCardError(errMsg);
+      setSaveFeedback({ type: 'error', text: errMsg });
       return;
     }
-    setCardError(null);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      updateLevelConfigs(prev => ({
-        ...prev,
-        [activeConfigTab]: {
-          ...prev[activeConfigTab],
-          [field]: result,
-        },
-      }));
+    const purposeMap: Record<typeof field, 'signature' | 'logo' | 'qr' | 'watermark'> = {
+      principalSignatureUrl: 'signature',
+      logoUrl: 'logo',
+      qrCodeUrl: 'qr',
+      watermarkUrl: 'watermark',
     };
-    reader.readAsDataURL(file);
+    const labelMap: Record<typeof field, string> = {
+      principalSignatureUrl: 'Tanda Tangan',
+      logoUrl: 'Logo Sekolah',
+      qrCodeUrl: 'QR Code',
+      watermarkUrl: 'Watermark Kartu',
+    };
+
+    setCardError(null);
+    setSaveFeedback(null);
+    setUploadingField(field);
+
+    try {
+      const levelSlug = activeConfigTab.replace('/', '_');
+      const previousUrl = levelConfigs[activeConfigTab]?.[field];
+      const uploaded = await uploadImageAssetToDrive(file, {
+        purpose: purposeMap[field],
+        fileName: `Kartu_${levelSlug}_${purposeMap[field]}`,
+        previousUrl,
+        trashPrevious: false,
+      });
+
+      const nextConfigs: Record<EducationLevel, LevelConfig> = {
+        ...levelConfigs,
+        [activeConfigTab]: {
+          ...levelConfigs[activeConfigTab],
+          [field]: uploaded.photoUrl,
+        },
+      };
+      updateLevelConfigs(nextConfigs);
+
+      if (onUpdateSettings) {
+        const savedOk = await onUpdateSettings({
+          levelConfigsJson: JSON.stringify(nextConfigs),
+        });
+        if (savedOk) {
+          isDirtyRef.current = false;
+          const msg = `${labelMap[field]} (${activeConfigTab}) tersimpan ke Google Drive folder "${uploaded.folderName || '04_Logo_TTD_dan_Aset_Kartu'}"!`;
+          setSaveFeedback({ type: 'success', text: msg });
+          emitActionToast({ type: 'saved', message: msg });
+          onSavedToast?.(msg);
+          return;
+        }
+      }
+      const msg = `${labelMap[field]} diunggah ke Google Drive. Klik Simpan untuk menerapkan.`;
+      setSaveFeedback({ type: 'success', text: msg });
+    } catch (err: any) {
+      const errMsg = err?.message || `Gagal mengunggah ${labelMap[field]} ke Google Drive.`;
+      setSaveFeedback({ type: 'error', text: errMsg });
+      emitActionToast({ type: 'error', message: errMsg });
+    } finally {
+      setUploadingField(null);
+    }
+  };
+
+  // Delete card image asset cleanly from BOTH Google Drive and Google Sheets
+  const handleDeleteAssetField = async (
+    field: 'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl',
+    label: string
+  ) => {
+    const currentUrl = levelConfigs[activeConfigTab]?.[field];
+    if (!currentUrl) return;
+    setDeletingField(field);
+    setSaveFeedback(null);
+    try {
+      if (extractDriveFileId(currentUrl)) {
+        await deleteImageAssetFromDrive(currentUrl);
+      }
+
+      const nextConfigs: Record<EducationLevel, LevelConfig> = {
+        ...levelConfigs,
+        [activeConfigTab]: {
+          ...levelConfigs[activeConfigTab],
+          [field]: undefined,
+        },
+      };
+      updateLevelConfigs(nextConfigs);
+
+      if (onUpdateSettings) {
+        const ok = await onUpdateSettings({
+          levelConfigsJson: JSON.stringify(nextConfigs),
+        });
+        if (!ok) {
+          throw new Error(`Gagal memperbarui Google Sheets setelah menghapus ${label}.`);
+        }
+        isDirtyRef.current = false;
+      }
+
+      const msg = `${label} (${activeConfigTab}) berhasil dihapus bersih dari Google Drive & Sheets.`;
+      setSaveFeedback({ type: 'success', text: msg });
+      emitActionToast({ type: 'deleted', message: msg });
+    } catch (err: any) {
+      const errMsg = err?.message || `Gagal menghapus ${label}.`;
+      setSaveFeedback({ type: 'error', text: errMsg });
+      emitActionToast({ type: 'error', message: errMsg });
+    } finally {
+      setDeletingField(null);
+    }
   };
 
   // Save Configs to server & local state
@@ -268,26 +374,33 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
         });
         if (success) {
           isDirtyRef.current = false;
-          const msg = 'Tersimpan di Google Sheets!';
+          const msg = 'Pengaturan kartu pelajar & gambar tersimpan di Google Sheets & Drive!';
           setSaveFeedback({ type: 'success', text: msg });
-          onSavedToast?.('Pengaturan kartu pelajar & tanda tangan tersimpan di Google Sheets!');
+          emitActionToast({ type: 'saved', message: msg });
+          onSavedToast?.(msg);
           setTimeout(() => {
             setSaveFeedback(null);
             setShowConfigModal(false);
-          }, 900);
+          }, 700);
           return;
         }
-        setSaveFeedback({ type: 'error', text: 'Gagal menyimpan pengaturan kartu ke Google Sheets.' });
+        const errText = 'Gagal menyimpan pengaturan kartu ke Google Sheets.';
+        setSaveFeedback({ type: 'error', text: errText });
+        emitActionToast({ type: 'error', message: errText });
         return;
       }
       isDirtyRef.current = false;
-      setSaveFeedback({ type: 'success', text: 'Tersimpan di sesi browser!' });
+      const localMsg = 'Tersimpan di sesi browser!';
+      setSaveFeedback({ type: 'success', text: localMsg });
+      emitActionToast({ type: 'saved', message: localMsg });
       setTimeout(() => {
         setSaveFeedback(null);
         setShowConfigModal(false);
-      }, 900);
+      }, 700);
     } catch (err: any) {
-      setSaveFeedback({ type: 'error', text: err?.message || 'Gagal menyimpan pengaturan kartu ke Google Sheets.' });
+      const errText = err?.message || 'Gagal menyimpan pengaturan kartu ke Google Sheets.';
+      setSaveFeedback({ type: 'error', text: errText });
+      emitActionToast({ type: 'error', message: errText });
     } finally {
       setIsSavingConfig(false);
     }
@@ -297,6 +410,18 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const downloadSingleCardJpg = async (student: Student, side: 'front' | 'back') => {
     setCardError(null);
     try {
+      const lvl = getStudentLevel(student);
+      const cfg = levelConfigs[lvl] || DEFAULT_LEVEL_CONFIGS[lvl];
+      await preloadDriveImageUrls([
+        student.photoUrl,
+        student.photoFileId ? `gas-photo://${student.photoFileId}` : undefined,
+        cfg.logoUrl,
+        cfg.principalSignatureUrl,
+        cfg.watermarkUrl,
+        cfg.qrCodeUrl,
+        watermarkUrl,
+      ]);
+
       const elemId = side === 'front' ? `card-front-${student.id}` : `card-back-${student.id}`;
       const elem = document.getElementById(elemId);
       if (!elem) {
@@ -337,6 +462,17 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     const folder = zip.folder(`Kartu_Pelajar_${selectedLevel !== 'ALL' ? selectedLevel.replace('/', '_') : 'Semua'}`);
 
     try {
+      const sharedUrls: Array<string | undefined> = [watermarkUrl];
+      (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
+        const c = levelConfigs[lvl];
+        if (c) sharedUrls.push(c.logoUrl, c.principalSignatureUrl, c.watermarkUrl, c.qrCodeUrl);
+      });
+      await preloadDriveImageUrls([
+        ...sharedUrls,
+        ...filteredStudents.map((s) => s.photoUrl),
+        ...filteredStudents.map((s) => (s.photoFileId ? `gas-photo://${s.photoFileId}` : undefined)),
+      ]);
+
       for (let i = 0; i < filteredStudents.length; i++) {
         const student = filteredStudents[i];
         setBatchProgress({
@@ -921,32 +1057,42 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                     <div className="flex items-center gap-2">
                       {levelConfigs[activeConfigTab].principalSignatureUrl ? (
                         <div className="flex items-center gap-2">
-                          <img
+                          <DriveImage
                             src={levelConfigs[activeConfigTab].principalSignatureUrl}
                             alt="TTD"
                             className="h-10 bg-white p-1 rounded-lg border border-slate-300 object-contain"
                           />
                           <button
                             type="button"
-                            onClick={() =>
-                              setLevelConfigs({
-                                ...levelConfigs,
-                                [activeConfigTab]: { ...levelConfigs[activeConfigTab], principalSignatureUrl: undefined },
-                              })
-                            }
-                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
-                            title="Hapus Tanda Tangan"
+                            disabled={deletingField === 'principalSignatureUrl'}
+                            onClick={() => handleDeleteAssetField('principalSignatureUrl', 'Tanda Tangan Kepala Sekolah')}
+                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50"
+                            title="Hapus Tanda Tangan dari Drive & Sheet"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            {deletingField === 'principalSignatureUrl' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
                           </button>
                         </div>
                       ) : (
                         <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/60 dark:text-blue-300 font-bold flex items-center gap-1.5 transition">
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>Pilih File TTD</span>
+                          {uploadingField === 'principalSignatureUrl' ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Mengunggah ke Drive...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Pilih File TTD</span>
+                            </>
+                          )}
                           <input
                             type="file"
                             accept="image/*"
+                            disabled={Boolean(uploadingField) || Boolean(deletingField)}
                             className="hidden"
                             onChange={e => handleFileUpload(e, 'principalSignatureUrl')}
                           />
@@ -965,38 +1111,48 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                       <span>Logo Sekolah Jenjang ({activeConfigTab})</span>
                     </span>
                     <p className="text-[11px] text-slate-500">
-                      Ganti logo default dengan logo resmi madrasah/sekolah jenjang ini.
+                      Tersimpan otomatis ke folder Google Drive sekolah.
                     </p>
 
                     <div className="flex items-center gap-2 pt-1">
                       {levelConfigs[activeConfigTab].logoUrl ? (
                         <div className="flex items-center gap-2">
-                          <img
+                          <DriveImage
                             src={levelConfigs[activeConfigTab].logoUrl}
                             alt="Logo"
                             className="w-10 h-10 rounded-full bg-white p-1 border border-slate-300 object-contain"
                           />
                           <button
                             type="button"
-                            onClick={() =>
-                              setLevelConfigs({
-                                ...levelConfigs,
-                                [activeConfigTab]: { ...levelConfigs[activeConfigTab], logoUrl: undefined },
-                              })
-                            }
-                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
-                            title="Hapus Logo"
+                            disabled={deletingField === 'logoUrl'}
+                            onClick={() => handleDeleteAssetField('logoUrl', 'Logo Sekolah')}
+                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50"
+                            title="Hapus Logo dari Drive & Sheet"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            {deletingField === 'logoUrl' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
                           </button>
                         </div>
                       ) : (
                         <label className="cursor-pointer px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-300 font-bold flex items-center gap-1.5 transition">
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>Upload Logo</span>
+                          {uploadingField === 'logoUrl' ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Mengunggah ke Drive...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Upload Logo</span>
+                            </>
+                          )}
                           <input
                             type="file"
                             accept="image/*"
+                            disabled={Boolean(uploadingField) || Boolean(deletingField)}
                             className="hidden"
                             onChange={e => handleFileUpload(e, 'logoUrl')}
                           />
@@ -1012,38 +1168,48 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                       <span>Watermark Background Kartu</span>
                     </span>
                     <p className="text-[11px] text-slate-500">
-                      Gambar transparan di tengah background depan & belakang kartu.
+                      Gambar transparan tersimpan di Drive &amp; tampil di background kartu.
                     </p>
 
                     <div className="flex items-center gap-2 pt-1">
                       {levelConfigs[activeConfigTab].watermarkUrl ? (
                         <div className="flex items-center gap-2">
-                          <img
+                          <DriveImage
                             src={levelConfigs[activeConfigTab].watermarkUrl}
                             alt="Watermark"
                             className="w-10 h-10 rounded-lg bg-white p-1 border border-slate-300 object-contain"
                           />
                           <button
                             type="button"
-                            onClick={() =>
-                              setLevelConfigs({
-                                ...levelConfigs,
-                                [activeConfigTab]: { ...levelConfigs[activeConfigTab], watermarkUrl: undefined },
-                              })
-                            }
-                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
-                            title="Hapus Watermark"
+                            disabled={deletingField === 'watermarkUrl'}
+                            onClick={() => handleDeleteAssetField('watermarkUrl', 'Watermark Kartu')}
+                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50"
+                            title="Hapus Watermark dari Drive & Sheet"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            {deletingField === 'watermarkUrl' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
                           </button>
                         </div>
                       ) : (
                         <label className="cursor-pointer px-3 py-1.5 rounded-xl bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold flex items-center gap-1.5 transition">
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>Upload Watermark</span>
+                          {uploadingField === 'watermarkUrl' ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Mengunggah ke Drive...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Upload Watermark</span>
+                            </>
+                          )}
                           <input
                             type="file"
                             accept="image/*"
+                            disabled={Boolean(uploadingField) || Boolean(deletingField)}
                             className="hidden"
                             onChange={e => handleFileUpload(e, 'watermarkUrl')}
                           />
@@ -1070,7 +1236,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                         value={levelConfigs[activeConfigTab].websiteUrl || ''}
                         placeholder={foundationWebsite || 'https://mambaululum.sch.id'}
                         onChange={e =>
-                          setLevelConfigs({
+                          updateLevelConfigs({
                             ...levelConfigs,
                             [activeConfigTab]: { ...levelConfigs[activeConfigTab], websiteUrl: e.target.value },
                           })
@@ -1089,31 +1255,42 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                       <div className="flex items-center gap-2">
                         {levelConfigs[activeConfigTab].qrCodeUrl ? (
                           <div className="flex items-center gap-2">
-                            <img
+                            <DriveImage
                               src={levelConfigs[activeConfigTab].qrCodeUrl}
                               alt="Custom QR"
                               className="w-9 h-9 rounded-md bg-white p-0.5 border border-slate-300 object-contain"
                             />
                             <button
                               type="button"
-                              onClick={() =>
-                                setLevelConfigs({
-                                  ...levelConfigs,
-                                  [activeConfigTab]: { ...levelConfigs[activeConfigTab], qrCodeUrl: undefined },
-                                })
-                              }
-                              className="p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950 rounded"
+                              disabled={deletingField === 'qrCodeUrl'}
+                              onClick={() => handleDeleteAssetField('qrCodeUrl', 'Gambar QR Khusus')}
+                              className="p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950 rounded disabled:opacity-50"
+                              title="Hapus QR dari Drive & Sheet"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              {deletingField === 'qrCodeUrl' ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
                             </button>
                           </div>
                         ) : (
                           <label className="cursor-pointer px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-semibold flex items-center gap-1.5 transition">
-                            <Upload className="w-3.5 h-3.5" />
-                            <span>Pilih File QR</span>
+                            {uploadingField === 'qrCodeUrl' ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Mengunggah...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>Pilih File QR</span>
+                              </>
+                            )}
                             <input
                               type="file"
                               accept="image/*"
+                              disabled={Boolean(uploadingField) || Boolean(deletingField)}
                               className="hidden"
                               onChange={e => handleFileUpload(e, 'qrCodeUrl')}
                             />
@@ -1133,7 +1310,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                     rows={2}
                     value={levelConfigs[activeConfigTab].vision}
                     onChange={e =>
-                      setLevelConfigs({
+                      updateLevelConfigs({
                         ...levelConfigs,
                         [activeConfigTab]: { ...levelConfigs[activeConfigTab], vision: e.target.value },
                       })
@@ -1150,7 +1327,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                     rows={3}
                     value={levelConfigs[activeConfigTab].missions.join('\n')}
                     onChange={e =>
-                      setLevelConfigs({
+                      updateLevelConfigs({
                         ...levelConfigs,
                         [activeConfigTab]: {
                           ...levelConfigs[activeConfigTab],

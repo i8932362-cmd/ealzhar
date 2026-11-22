@@ -14,6 +14,7 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
 import { ProblemStudent } from '../../types/index.ts';
 import { gasGet, gasPost, getWibTodayStr } from '../../lib/api.ts';
+import { emitActionToast } from '../../lib/toast.ts';
 
 export const CounselingDashboard: React.FC = () => {
   const { user } = useAuth();
@@ -120,15 +121,24 @@ export const CounselingDashboard: React.FC = () => {
       });
 
       if (res.success) {
+        await notifyFaceDatabaseChanged();
         setShowNoteModal(false);
         setNoteContent('');
         setActionPlan('');
-        await notifyFaceDatabaseChanged();
+        emitActionToast({
+          type: 'saved',
+          title: 'Tersimpan',
+          message: `Catatan tindak lanjut BK untuk "${student?.name || 'siswa'}" berhasil disimpan ke Google Sheets.`,
+        });
       } else {
-        setNoteError(res.error || 'Gagal menyimpan catatan BK.');
+        const errMsg = res.error || 'Gagal menyimpan catatan BK.';
+        setNoteError(errMsg);
+        emitActionToast({ type: 'error', title: 'Gagal', message: errMsg });
       }
     } catch (err: any) {
-      setNoteError(err?.message || 'Gagal menyimpan catatan BK.');
+      const errMsg = err?.message || 'Gagal menyimpan catatan BK.';
+      setNoteError(errMsg);
+      emitActionToast({ type: 'error', title: 'Gagal', message: errMsg });
     } finally {
       setIsSubmittingNote(false);
     }
