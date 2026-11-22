@@ -25,6 +25,7 @@ import {
   Pencil,
   Layers,
   Loader2,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
@@ -79,6 +80,18 @@ function normalizeEducationLevel(raw?: string): EducationLevel | '' {
   return '';
 }
 
+function detectExplicitLevelFromClassName(className?: string): EducationLevel | '' {
+  const clsUp = String(className || '').toUpperCase().trim();
+  if (!clsUp) return '';
+  if (/\b(SMA|SMK|MA)\b/.test(clsUp)) return 'SMA/MA';
+  if (/\b(SMP|MTS)\b/.test(clsUp)) return 'SMP/MTS';
+  if (/\b(SD|MI)\b/.test(clsUp)) return 'SD/MI';
+  if (/\b(XII|XI|X)\b/.test(clsUp) || /(?:^|[\s\-_/])(12|11|10)(?![0-9])/.test(clsUp)) return 'SMA/MA';
+  if (/\b(IX|VIII|VII)\b/.test(clsUp) || /(?:^|[\s\-_/])(9|8|7)(?![0-9])/.test(clsUp)) return 'SMP/MTS';
+  if (/\b(VI|V|IV|III|II|I)\b/.test(clsUp) || /(?:^|[\s\-_/])(6|5|4|3|2|1)(?![0-9])/.test(clsUp)) return 'SD/MI';
+  return '';
+}
+
 function inferEducationLevel(rawLevel?: string, grade?: string | number, className?: string): EducationLevel {
   const direct = normalizeEducationLevel(rawLevel);
   if (direct) return direct;
@@ -88,10 +101,8 @@ function inferEducationLevel(rawLevel?: string, grade?: string | number, classNa
     if (g <= 9) return 'SMP/MTS';
     return 'SMA/MA';
   }
-  const clsUp = String(className || '').toUpperCase().trim();
-  if (/\b(SMA|SMK|MA|XII|XI|X|12|11|10)\b/.test(clsUp)) return 'SMA/MA';
-  if (/\b(SMP|MTS|IX|VIII|VII|9|8|7)\b/.test(clsUp)) return 'SMP/MTS';
-  if (/\b(SD|MI|VI|V|IV|III|II|I|6|5|4|3|2|1)\b/.test(clsUp)) return 'SD/MI';
+  const byName = detectExplicitLevelFromClassName(className);
+  if (byName) return byName;
   return 'SMA/MA';
 }
 import { PasswordInput } from '../common/PasswordInput.tsx';
@@ -302,6 +313,8 @@ export const AdminDashboard: React.FC = () => {
             nisn: '0071234580',
             nama: 'Ahmad Zaki Fauzan',
             jenisKelamin: 'L',
+            tempatLahir: 'Jombang',
+            tanggalLahir: '12-08-2009',
             jenjang: preferredLevel,
             kelas: fallbackClassFor(preferredLevel, 0),
             alamat: 'Jl. Pesantren No. 12, Diwek, Jombang',
@@ -313,6 +326,8 @@ export const AdminDashboard: React.FC = () => {
             nisn: '0071234581',
             nama: 'Nabila Putri Cahyani',
             jenisKelamin: 'P',
+            tempatLahir: 'Mojokerto',
+            tanggalLahir: '04-03-2010',
             jenjang: preferredLevel,
             kelas: fallbackClassFor(preferredLevel, 1),
             alamat: 'Dusun Krajan RT 02/RW 01, Peterongan, Jombang',
@@ -326,6 +341,8 @@ export const AdminDashboard: React.FC = () => {
             nisn: '0071234580',
             nama: 'Ahmad Zaki Fauzan',
             jenisKelamin: 'L',
+            tempatLahir: 'Jombang',
+            tanggalLahir: '12-08-2009',
             jenjang: 'SMA/MA',
             kelas: fallbackClassFor('SMA/MA', 0),
             alamat: 'Jl. Pesantren No. 12, Diwek, Jombang',
@@ -337,6 +354,8 @@ export const AdminDashboard: React.FC = () => {
             nisn: '0071234581',
             nama: 'Nabila Putri Cahyani',
             jenisKelamin: 'P',
+            tempatLahir: 'Mojokerto',
+            tanggalLahir: '04-03-2010',
             jenjang: 'SMP/MTS',
             kelas: fallbackClassFor('SMP/MTS', 0),
             alamat: 'Dusun Krajan RT 02/RW 01, Peterongan, Jombang',
@@ -348,6 +367,8 @@ export const AdminDashboard: React.FC = () => {
             nisn: '0071234582',
             nama: 'Muhammad Farhan',
             jenisKelamin: 'L',
+            tempatLahir: 'Jombang',
+            tanggalLahir: '19-11-2015',
             jenjang: 'SD/MI',
             kelas: fallbackClassFor('SD/MI', 0),
             alamat: 'Jl. Merdeka No. 8, Mojoagung, Jombang',
@@ -3598,6 +3619,49 @@ const ClassesSection: React.FC<{
   );
 };
 
+// Date helpers for student birthDate <-> HTML <input type="date">
+function normalizeBirthDateToHtmlInput(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+  }
+  const dmyMatch = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (dmyMatch) {
+    return `${dmyMatch[3]}-${dmyMatch[2].padStart(2, '0')}-${dmyMatch[1].padStart(2, '0')}`;
+  }
+  const months: Record<string, string> = {
+    januari: '01', jan: '01',
+    februari: '02', feb: '02', pebruari: '02',
+    maret: '03', mar: '03',
+    april: '04', apr: '04',
+    mei: '05', may: '05',
+    juni: '06', jun: '06',
+    juli: '07', jul: '07',
+    agustus: '08', agu: '08', agt: '08', aug: '08',
+    september: '09', sep: '09', sept: '09',
+    oktober: '10', okt: '10', oct: '10',
+    november: '11', nov: '11', nopember: '11',
+    desember: '12', des: '12', dec: '12',
+  };
+  const txtMatch = s.toLowerCase().match(/^(\d{1,2})\s+([a-z]+)\s+(\d{4})$/);
+  if (txtMatch && months[txtMatch[2]]) {
+    return `${txtMatch[3]}-${months[txtMatch[2]]}-${txtMatch[1].padStart(2, '0')}`;
+  }
+  return '';
+}
+
+function formatBirthDateToDisplay(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    return `${isoMatch[3].padStart(2, '0')}-${isoMatch[2].padStart(2, '0')}-${isoMatch[1]}`;
+  }
+  return s;
+}
+
 // Students Section
 const StudentsSection: React.FC<{
   students: Student[];
@@ -3616,7 +3680,12 @@ const StudentsSection: React.FC<{
   const [nisn, setNisn] = useState('');
   const [gender, setGender] = useState<'L' | 'P'>('L');
   const [classId, setClassId] = useState(classes[0]?.id || '');
+  const [customClassName, setCustomClassName] = useState('');
+  const [useCustomClassInput, setUseCustomClassInput] = useState(classes.length === 0);
   const [level, setLevel] = useState<EducationLevel>('SMA/MA');
+  const [levelManuallySelected, setLevelManuallySelected] = useState(false);
+  const [birthPlace, setBirthPlace] = useState('');
+  const [birthDate, setBirthDate] = useState('');
   const [address, setAddress] = useState('');
   const [barcodeCard, setBarcodeCard] = useState('');
   const [parentPhone, setParentPhone] = useState('');
@@ -3625,16 +3694,39 @@ const StudentsSection: React.FC<{
   const [deleteTarget, setDeleteTarget] = useState<Student | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Inline quick class edit per row
+  const [inlineClassStudentId, setInlineClassStudentId] = useState<string | null>(null);
+  const [inlineClassName, setInlineClassName] = useState('');
+  const [isSavingInlineClass, setIsSavingInlineClass] = useState(false);
+
   useEffect(() => {
-    if (!classId && classes.length > 0) {
+    if (!classId && !useCustomClassInput && classes.length > 0 && !showModal) {
       setClassId(classes[0].id);
     }
-  }, [classes, classId]);
+  }, [classes, classId, useCustomClassInput, showModal]);
 
   const resolveStudentLevel = (st: Student): EducationLevel => {
     const cls = classes.find(c => c.id === st.classId);
     return inferEducationLevel(st.level || cls?.level, cls?.grade, cls?.name);
   };
+
+  const findMatchingClassByName = (rawName: string, preferredLevel?: EducationLevel): SchoolClass | undefined => {
+    const key = rawName.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!key) return undefined;
+    if (preferredLevel) {
+      const exactLvl = classes.find(
+        c => c.name.trim().toLowerCase().replace(/\s+/g, ' ') === key &&
+             inferEducationLevel(c.level, c.grade, c.name) === preferredLevel
+      );
+      if (exactLvl) return exactLvl;
+    }
+    return classes.find(c => c.name.trim().toLowerCase().replace(/\s+/g, ' ') === key);
+  };
+
+  const matchedCustomClass = useMemo(() => {
+    if (!useCustomClassInput || !customClassName.trim()) return undefined;
+    return findMatchingClassByName(customClassName, level);
+  }, [useCustomClassInput, customClassName, level, classes]);
 
   const openAddModal = () => {
     const firstCls = classes[0];
@@ -3645,7 +3737,12 @@ const StudentsSection: React.FC<{
     setNisn('');
     setGender('L');
     setClassId(firstCls?.id || '');
+    setCustomClassName('');
+    setUseCustomClassInput(classes.length === 0);
     setLevel(inferEducationLevel(firstCls?.level, firstCls?.grade, firstCls?.name));
+    setLevelManuallySelected(false);
+    setBirthPlace('');
+    setBirthDate('');
     setAddress('');
     setBarcodeCard('');
     setParentPhone('');
@@ -3653,59 +3750,189 @@ const StudentsSection: React.FC<{
   };
 
   const openEditModal = (st: Student) => {
+    const matchedCls = classes.find(c => c.id === st.classId);
     setFeedback(null);
     setEditingStudent(st);
     setName(st.name || '');
     setNis(st.nis || '');
     setNisn(st.nisn || '');
     setGender((st.gender || 'L') as 'L' | 'P');
-    setClassId(st.classId || classes[0]?.id || '');
+    setClassId(matchedCls ? matchedCls.id : '');
+    setCustomClassName('');
+    setUseCustomClassInput(classes.length === 0);
     setLevel(resolveStudentLevel(st));
+    setLevelManuallySelected(false);
+    setBirthPlace(st.birthPlace || '');
+    setBirthDate(normalizeBirthDateToHtmlInput(st.birthDate));
     setAddress(st.address || '');
     setBarcodeCard(st.barcodeCard || '');
     setParentPhone(st.parentPhone || '');
     setShowModal(true);
   };
 
+  const handleSaveInlineClass = async (st: Student) => {
+    if (isSavingInlineClass) return;
+    const trimmedTarget = inlineClassName.trim();
+    if (!trimmedTarget) {
+      onErrorToast?.('Nama kelas tidak boleh kosong.');
+      return;
+    }
+
+    const hintLevel = detectExplicitLevelFromClassName(trimmedTarget);
+    const existingMatch = findMatchingClassByName(trimmedTarget, hintLevel || resolveStudentLevel(st));
+    if (existingMatch && existingMatch.id === st.classId) {
+      setInlineClassStudentId(null);
+      setInlineClassName('');
+      return;
+    }
+
+    setIsSavingInlineClass(true);
+    setFeedback(null);
+    try {
+      const nextLevel: EducationLevel = existingMatch
+        ? inferEducationLevel(existingMatch.level, existingMatch.grade, existingMatch.name)
+        : (hintLevel || resolveStudentLevel(st));
+
+      const updatePayload: Record<string, any> = existingMatch
+        ? { classId: existingMatch.id, level: nextLevel }
+        : { classId: '', className: trimmedTarget, level: nextLevel };
+
+      const res = await gasPost('updateRecord', {
+        entity: 'Students',
+        id: st.id,
+        data: updatePayload,
+        expectedUpdatedAt: st.diubah_pada || st.updatedAt,
+      });
+
+      if (!res?.success) {
+        throw new Error(res?.error || 'Gagal menyimpan kelas siswa.');
+      }
+
+      await onRefresh();
+      setInlineClassStudentId(null);
+      setInlineClassName('');
+
+      const createdClsName = res?.autoCreatedClass?.name;
+      const msg = createdClsName
+        ? `Siswa "${st.name}" ditempatkan ke kelas "${createdClsName}" & kelas baru otomatis ditambahkan ke Data Kelas.`
+        : `Kelas siswa "${st.name}" diperbarui menjadi "${existingMatch?.name || trimmedTarget}".`;
+      setFeedback({ type: 'success', text: msg });
+      onSavedToast?.(msg);
+    } catch (err: any) {
+      const errMsg = err?.message || 'Gagal memperbarui kelas siswa.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
+    } finally {
+      setIsSavingInlineClass(false);
+    }
+  };
+
   const handleSaveStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving) return;
     setFeedback(null);
+
+    const trimmedCustomClass = customClassName.trim();
+    if (useCustomClassInput && !trimmedCustomClass) {
+      const errMsg = 'Silakan ketik nama kelas baru atau pilih dari daftar kelas.';
+      setFeedback({ type: 'error', text: errMsg });
+      onErrorToast?.(errMsg);
+      return;
+    }
+
     setIsSaving(true);
     try {
       const trimmedNis = nis.trim();
-      const payload = {
-        name: name.trim(),
-        nis: trimmedNis,
-        nisn: nisn.trim(),
-        gender,
-        classId,
-        level,
-        address: address.trim(),
-        barcodeCard: barcodeCard.trim() || `CARD-${trimmedNis}`,
-        parentPhone: parentPhone.trim(),
-      };
-      const res = editingStudent
-        ? await gasPost('updateRecord', {
-            entity: 'Students',
-            id: editingStudent.id,
-            data: payload,
-            expectedUpdatedAt: editingStudent.diubah_pada || editingStudent.updatedAt,
-          })
-        : await gasPost('createRecord', {
-            entity: 'Students',
-            data: payload,
-          });
+      const trimmedNisn = nisn.trim();
+      const formattedBirthDate = formatBirthDateToDisplay(birthDate);
+
+      let resolvedClassIdPayload = classId;
+      let resolvedClassNamePayload = '';
+      let resolvedLevelPayload: EducationLevel = level;
+
+      if (useCustomClassInput && trimmedCustomClass) {
+        if (matchedCustomClass) {
+          resolvedClassIdPayload = matchedCustomClass.id;
+          resolvedLevelPayload = inferEducationLevel(matchedCustomClass.level, matchedCustomClass.grade, matchedCustomClass.name);
+        } else {
+          resolvedClassIdPayload = '';
+          resolvedClassNamePayload = trimmedCustomClass;
+        }
+      }
+
+      let res: any;
+      if (editingStudent) {
+        // Send only changed fields for NIS/NISN/barcodeCard so editing TTL/class never disturbs or conflicts with existing NIS/NISN
+        const updatePayload: Record<string, any> = {
+          name: name.trim(),
+          gender,
+          classId: resolvedClassIdPayload,
+          level: resolvedLevelPayload,
+          birthPlace: birthPlace.trim(),
+          birthDate: formattedBirthDate,
+          address: address.trim(),
+          parentPhone: parentPhone.trim(),
+        };
+        if (resolvedClassNamePayload) {
+          updatePayload.className = resolvedClassNamePayload;
+        }
+        if (trimmedNis !== String(editingStudent.nis || '').trim()) {
+          updatePayload.nis = trimmedNis;
+        }
+        if (trimmedNisn !== String(editingStudent.nisn || '').trim()) {
+          updatePayload.nisn = trimmedNisn;
+        }
+        const nextBarcode = barcodeCard.trim() || `CARD-${trimmedNis}`;
+        if (nextBarcode !== String(editingStudent.barcodeCard || '').trim()) {
+          updatePayload.barcodeCard = nextBarcode;
+        }
+        res = await gasPost('updateRecord', {
+          entity: 'Students',
+          id: editingStudent.id,
+          data: updatePayload,
+          expectedUpdatedAt: editingStudent.diubah_pada || editingStudent.updatedAt,
+        });
+      } else {
+        const createPayload: Record<string, any> = {
+          name: name.trim(),
+          nis: trimmedNis,
+          nisn: trimmedNisn,
+          gender,
+          classId: resolvedClassIdPayload,
+          level: resolvedLevelPayload,
+          birthPlace: birthPlace.trim(),
+          birthDate: formattedBirthDate,
+          address: address.trim(),
+          barcodeCard: barcodeCard.trim() || `CARD-${trimmedNis}`,
+          parentPhone: parentPhone.trim(),
+        };
+        if (resolvedClassNamePayload) {
+          createPayload.className = resolvedClassNamePayload;
+        }
+        res = await gasPost('createRecord', {
+          entity: 'Students',
+          data: createPayload,
+        });
+      }
+
       if (res.success) {
         await onRefresh();
-        const msg = editingStudent
-          ? `Perubahan data siswa "${payload.name}" (${payload.level}) tersimpan.`
-          : `Data siswa baru "${payload.name}" (${payload.level}) berhasil ditambahkan.`;
+        const savedName = name.trim();
+        const createdClsName = res?.autoCreatedClass?.name;
+        const msg = createdClsName
+          ? `${editingStudent ? 'Perubahan data' : 'Data'} siswa "${savedName}" tersimpan & kelas baru "${createdClsName}" otomatis ditambahkan ke Data Kelas.`
+          : editingStudent
+            ? `Perubahan data siswa "${savedName}" (${resolvedLevelPayload}) tersimpan & tersinkron ke kartu siswa.`
+            : `Data siswa baru "${savedName}" (${resolvedLevelPayload}) berhasil ditambahkan.`;
         setShowModal(false);
         setEditingStudent(null);
         setName('');
         setNis('');
         setNisn('');
+        setCustomClassName('');
+        setUseCustomClassInput(false);
+        setBirthPlace('');
+        setBirthDate('');
         setAddress('');
         setBarcodeCard('');
         setParentPhone('');
@@ -3731,6 +3958,8 @@ const StudentsSection: React.FC<{
     return (
       s.name.toLowerCase().includes(q) ||
       s.nis.includes(search) ||
+      (s.nisn || '').includes(search) ||
+      (s.birthPlace || '').toLowerCase().includes(q) ||
       (s.address || '').toLowerCase().includes(q)
     );
   });
@@ -3740,7 +3969,7 @@ const StudentsSection: React.FC<{
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white">Database Siswa ({filtered.length} / {students.length})</h3>
-          <p className="text-xs text-slate-500">Kelola &amp; edit data masing-masing siswa, jenjang pendidikan, alamat, barcode kartu, dan kontak wali</p>
+          <p className="text-xs text-slate-500">Kelola &amp; edit data masing-masing siswa, tempat/tanggal lahir (TTL), jenjang, alamat, dan kontak wali (sinkron otomatis ke kartu siswa)</p>
         </div>
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
           <select
@@ -3792,12 +4021,19 @@ const StudentsSection: React.FC<{
         </div>
       )}
 
+      <datalist id="students-inline-class-datalist">
+        {classes.map(c => (
+          <option key={c.id} value={c.name} />
+        ))}
+      </datalist>
+
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 uppercase font-semibold">
-              <th className="py-3 px-3">NIS</th>
+              <th className="py-3 px-3">NIS / NISN</th>
               <th className="py-3 px-3">Nama Siswa</th>
+              <th className="py-3 px-3">Tempat, Tgl Lahir</th>
               <th className="py-3 px-3">Jenjang</th>
               <th className="py-3 px-3">Kelas</th>
               <th className="py-3 px-3">Alamat</th>
@@ -3809,16 +4045,95 @@ const StudentsSection: React.FC<{
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {filtered.map(s => {
               const stdLevel = resolveStudentLevel(s);
+              const ttlDate = formatBirthDateToDisplay(s.birthDate);
+              const ttlDisplay =
+                s.birthPlace && ttlDate
+                  ? `${s.birthPlace}, ${ttlDate}`
+                  : s.birthPlace || ttlDate || '-';
+              const currentClsObj = classes.find(c => c.id === s.classId);
+              const isInlineEditing = inlineClassStudentId === s.id;
               return (
                 <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <td className="py-3 px-3 font-mono">{s.nis}</td>
+                  <td className="py-3 px-3 font-mono">
+                    <div>{s.nis}</div>
+                    {s.nisn && <div className="text-[10px] text-blue-600">{s.nisn}</div>}
+                  </td>
                   <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">{s.name}</td>
+                  <td className="py-3 px-3 text-slate-600 dark:text-slate-300 whitespace-nowrap">{ttlDisplay}</td>
                   <td className="py-3 px-3">
                     <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 font-bold text-[10px]">
                       {stdLevel}
                     </span>
                   </td>
-                  <td className="py-3 px-3 text-slate-500">{classes.find(c => c.id === s.classId)?.name || '-'}</td>
+                  <td className="py-3 px-3">
+                    {isInlineEditing ? (
+                      <div className="flex flex-col gap-1 min-w-[165px]">
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            list="students-inline-class-datalist"
+                            value={inlineClassName}
+                            onChange={e => setInlineClassName(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleSaveInlineClass(s);
+                              } else if (e.key === 'Escape') {
+                                setInlineClassStudentId(null);
+                                setInlineClassName('');
+                              }
+                            }}
+                            placeholder="Ketik / pilih kelas..."
+                            autoFocus
+                            className="w-28 px-2 py-1 text-[11px] bg-white dark:bg-slate-800 border border-blue-400 rounded-lg outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={isSavingInlineClass}
+                            onClick={() => void handleSaveInlineClass(s)}
+                            className="p-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                            title="Simpan kelas"
+                          >
+                            {isSavingInlineClass ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isSavingInlineClass}
+                            onClick={() => {
+                              setInlineClassStudentId(null);
+                              setInlineClassName('');
+                            }}
+                            className="p-1 rounded-lg bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 text-slate-600 dark:text-slate-200 disabled:opacity-50"
+                            title="Batal"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        {inlineClassName.trim() && !findMatchingClassByName(inlineClassName, detectExplicitLevelFromClassName(inlineClassName) || stdLevel) && (
+                          <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium">
+                            + Kelas baru otomatis masuk Data Kelas
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInlineClassStudentId(s.id);
+                          setInlineClassName(currentClsObj?.name || '');
+                        }}
+                        title="Klik untuk tentukan atau ubah kelas siswa"
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+                          currentClsObj
+                            ? 'bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-blue-950/50'
+                            : 'bg-amber-50 hover:bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                        }`}
+                      >
+                        <span>{currentClsObj?.name || '+ Tentukan Kelas'}</span>
+                        <Pencil className="w-2.5 h-2.5 opacity-60" />
+                      </button>
+                    )}
+                  </td>
                   <td className="py-3 px-3 text-slate-500 max-w-[180px] truncate" title={s.address || '-'}>
                     {s.address || '-'}
                   </td>
@@ -3952,7 +4267,10 @@ const StudentsSection: React.FC<{
                   <label className="block font-semibold mb-1">Jenjang Pendidikan</label>
                   <select
                     value={level}
-                    onChange={e => setLevel(e.target.value as EducationLevel)}
+                    onChange={e => {
+                      setLevel(e.target.value as EducationLevel);
+                      setLevelManuallySelected(true);
+                    }}
                     className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   >
                     <option value="SD/MI">SD/MI</option>
@@ -3963,25 +4281,106 @@ const StudentsSection: React.FC<{
               </div>
 
               <div>
-                <label className="block font-semibold mb-1">Kelas</label>
-                <select
-                  value={classId}
-                  onChange={e => {
-                    const nextId = e.target.value;
-                    setClassId(nextId);
-                    const pickedCls = classes.find(c => c.id === nextId);
-                    if (pickedCls) {
-                      setLevel(inferEducationLevel(pickedCls.level, pickedCls.grade, pickedCls.name));
-                    }
-                  }}
-                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                >
-                  {classes.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} ({inferEducationLevel(c.level, c.grade, c.name)})
-                    </option>
-                  ))}
-                </select>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold">Kelas</label>
+                  {classes.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextCustom = !useCustomClassInput;
+                        setUseCustomClassInput(nextCustom);
+                        if (!nextCustom && !classId && classes[0]) {
+                          setClassId(classes[0].id);
+                        }
+                      }}
+                      className="text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer"
+                    >
+                      {useCustomClassInput ? 'Pilih dari daftar kelas' : '+ Ketik / Buat kelas baru'}
+                    </button>
+                  )}
+                </div>
+
+                {useCustomClassInput ? (
+                  <div className="space-y-1.5">
+                    <input
+                      type="text"
+                      list="students-inline-class-datalist"
+                      value={customClassName}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setCustomClassName(val);
+                        if (!levelManuallySelected) {
+                          const hint = detectExplicitLevelFromClassName(val);
+                          if (hint) setLevel(hint);
+                        }
+                      }}
+                      placeholder="Ketik nama kelas (misal: X IPA 2, 7B, Kelas 4A)"
+                      className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-blue-300 dark:border-blue-700 rounded-xl"
+                      required
+                    />
+                    {customClassName.trim() && (
+                      <p className={`text-[11px] font-medium ${matchedCustomClass ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'}`}>
+                        {matchedCustomClass
+                          ? `Kelas "${matchedCustomClass.name}" (${inferEducationLevel(matchedCustomClass.level, matchedCustomClass.grade, matchedCustomClass.name)}) sudah ada — siswa akan dimasukkan ke kelas ini.`
+                          : `Kelas baru "${customClassName.trim()}" (${level}) akan otomatis ditambahkan ke Data Kelas saat disimpan.`}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <select
+                    value={classId}
+                    onChange={e => {
+                      const nextId = e.target.value;
+                      if (nextId === '__CUSTOM__') {
+                        setUseCustomClassInput(true);
+                        setCustomClassName('');
+                        return;
+                      }
+                      setClassId(nextId);
+                      const pickedCls = classes.find(c => c.id === nextId);
+                      if (pickedCls) {
+                        setLevel(inferEducationLevel(pickedCls.level, pickedCls.grade, pickedCls.name));
+                        setLevelManuallySelected(false);
+                      }
+                    }}
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  >
+                    {!classId && <option value="">-- Pilih Kelas --</option>}
+                    {classes.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({inferEducationLevel(c.level, c.grade, c.name)})
+                      </option>
+                    ))}
+                    <option value="__CUSTOM__">+ Ketik / Buat Kelas Baru...</option>
+                  </select>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-semibold mb-1">Tempat Lahir</label>
+                  <input
+                    type="text"
+                    value={birthPlace}
+                    onChange={e => setBirthPlace(e.target.value)}
+                    placeholder="Contoh: Jombang"
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold mb-1">Tanggal Lahir</label>
+                  <input
+                    type="date"
+                    value={birthDate}
+                    onChange={e => setBirthDate(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                  {birthDate && (
+                    <span className="text-[10px] text-slate-400 mt-0.5 block">
+                      Tampil di kartu: {formatBirthDateToDisplay(birthDate)}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div>

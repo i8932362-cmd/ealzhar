@@ -111,6 +111,25 @@ export const SchoolEmblemSvg: React.FC<{ className?: string }> = ({ className = 
   </div>
 );
 
+export function formatStudentBirthDateForCard(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    return `${isoMatch[3].padStart(2, '0')}-${isoMatch[2].padStart(2, '0')}-${isoMatch[1]}`;
+  }
+  return s;
+}
+
+export function formatStudentBirthLineForCard(birthPlace?: string, birthDate?: string): string {
+  const place = String(birthPlace || '').trim();
+  const date = formatStudentBirthDateForCard(birthDate);
+  if (place && date) return `${place}, ${date}`;
+  if (place) return place;
+  if (date) return date;
+  return '-';
+}
+
 // Helper to determine student photo url (fallback to clean avatar if none)
 export function getStudentPhotoUrl(student: Student): string {
   if (student.photoUrl && student.photoUrl.trim().length > 10) {
@@ -295,7 +314,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
               <div>
                 <div className="text-[7.5px] font-bold text-slate-400 leading-none">Tempat, Tgl Lahir</div>
                 <div className="text-[8.5px] font-semibold text-slate-700 truncate">
-                  {student.birthPlace || 'Jombang'}, {student.birthDate || '12-08-2009'}
+                  {formatStudentBirthLineForCard(student.birthPlace, student.birthDate)}
                 </div>
               </div>
 

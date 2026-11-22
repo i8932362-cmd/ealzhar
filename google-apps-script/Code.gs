@@ -139,9 +139,12 @@ function inferEducationLevel_(rawLevel, gradeStr, classNameStr) {
 
   var clsUp = String(classNameStr || '').toUpperCase().trim();
   if (clsUp) {
-    if (/\b(SMA|SMK|MA|XII|XI|X|12|11|10)\b/.test(clsUp)) return 'SMA/MA';
-    if (/\b(SMP|MTS|IX|VIII|VII|9|8|7)\b/.test(clsUp)) return 'SMP/MTS';
-    if (/\b(SD|MI|VI|V|IV|III|II|I|6|5|4|3|2|1)\b/.test(clsUp)) return 'SD/MI';
+    if (/\b(SMA|SMK|MA)\b/.test(clsUp)) return 'SMA/MA';
+    if (/\b(SMP|MTS)\b/.test(clsUp)) return 'SMP/MTS';
+    if (/\b(SD|MI)\b/.test(clsUp)) return 'SD/MI';
+    if (/\b(XII|XI|X)\b/.test(clsUp) || /(?:^|[\s\-_/])(12|11|10)(?![0-9])/.test(clsUp)) return 'SMA/MA';
+    if (/\b(IX|VIII|VII)\b/.test(clsUp) || /(?:^|[\s\-_/])(9|8|7)(?![0-9])/.test(clsUp)) return 'SMP/MTS';
+    if (/\b(VI|V|IV|III|II|I)\b/.test(clsUp) || /(?:^|[\s\-_/])(6|5|4|3|2|1)(?![0-9])/.test(clsUp)) return 'SD/MI';
   }
   return '';
 }
@@ -152,21 +155,90 @@ function inferGradeNumber_(level, gradeStr, classNameStr) {
     return String(explicitNum);
   }
   var clsUp = String(classNameStr || '').toUpperCase().trim();
-  if (/\b(12|XII)\b/.test(clsUp)) return '12';
-  if (/\b(11|XI)\b/.test(clsUp)) return '11';
-  if (/\b(10|X)\b/.test(clsUp)) return '10';
-  if (/\b(9|IX)\b/.test(clsUp)) return '9';
-  if (/\b(8|VIII)\b/.test(clsUp)) return '8';
-  if (/\b(7|VII)\b/.test(clsUp)) return '7';
-  if (/\b(6|VI)\b/.test(clsUp)) return '6';
-  if (/\b(5|V)\b/.test(clsUp)) return '5';
-  if (/\b(4|IV)\b/.test(clsUp)) return '4';
-  if (/\b(3|III)\b/.test(clsUp)) return '3';
-  if (/\b(2|II)\b/.test(clsUp)) return '2';
-  if (/\b(1|I)\b/.test(clsUp)) return '1';
+  if (/\bXII\b/.test(clsUp) || /(?:^|[\s\-_/])12(?![0-9])/.test(clsUp)) return '12';
+  if (/\bXI\b/.test(clsUp) || /(?:^|[\s\-_/])11(?![0-9])/.test(clsUp)) return '11';
+  if (/\bX\b/.test(clsUp) || /(?:^|[\s\-_/])10(?![0-9])/.test(clsUp)) return '10';
+  if (/\bIX\b/.test(clsUp) || /(?:^|[\s\-_/])9(?![0-9])/.test(clsUp)) return '9';
+  if (/\bVIII\b/.test(clsUp) || /(?:^|[\s\-_/])8(?![0-9])/.test(clsUp)) return '8';
+  if (/\bVII\b/.test(clsUp) || /(?:^|[\s\-_/])7(?![0-9])/.test(clsUp)) return '7';
+  if (/\bVI\b/.test(clsUp) || /(?:^|[\s\-_/])6(?![0-9])/.test(clsUp)) return '6';
+  if (/\bV\b/.test(clsUp) || /(?:^|[\s\-_/])5(?![0-9])/.test(clsUp)) return '5';
+  if (/\bIV\b/.test(clsUp) || /(?:^|[\s\-_/])4(?![0-9])/.test(clsUp)) return '4';
+  if (/\bIII\b/.test(clsUp) || /(?:^|[\s\-_/])3(?![0-9])/.test(clsUp)) return '3';
+  if (/\bII\b/.test(clsUp) || /(?:^|[\s\-_/])2(?![0-9])/.test(clsUp)) return '2';
+  if (/\bI\b/.test(clsUp) || /(?:^|[\s\-_/])1(?![0-9])/.test(clsUp)) return '1';
   if (level === 'SD/MI') return '1';
   if (level === 'SMP/MTS') return '7';
   return '10';
+}
+
+function resolveOrAutoCreateClassForStudent_(ss, rawClassId, rawClassName, rawLevel, rawGrade, actor) {
+  var existingClasses = readActiveRows_(ss, 'Classes');
+  var clsIdStr = String(rawClassId || '').trim();
+  var clsNameStr = String(rawClassName || '').trim();
+  var reqLevel = normalizeEducationLevel_(rawLevel);
+  var nameLevelHint = inferEducationLevel_('', rawGrade, clsNameStr);
+
+  if (clsNameStr) {
+    var lookupKey = clsNameStr.toLowerCase().replace(/\s+/g, ' ');
+    var targetLevel = reqLevel || nameLevelHint || 'SMA/MA';
+
+    // 1. Exact match by name + matching level
+    for (var i = 0; i < existingClasses.length; i++) {
+      var ex = existingClasses[i];
+      var exKey = String(ex.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      var exLevel = inferEducationLevel_(ex.level, ex.grade, ex.name) || 'SMA/MA';
+      if (exKey === lookupKey && exLevel === targetLevel) {
+        return { classObj: ex, autoCreated: false };
+      }
+    }
+
+    // 2. Match by name regardless of level (avoid duplicate class names when level wasn't distinct)
+    for (var j = 0; j < existingClasses.length; j++) {
+      var exAny = existingClasses[j];
+      var exAnyKey = String(exAny.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      if (exAnyKey === lookupKey) {
+        return { classObj: exAny, autoCreated: false };
+      }
+    }
+
+    // 3. Auto-create new class in Classes sheet
+    var classesSheet = ss.getSheetByName('Classes');
+    if (classesSheet) {
+      var parts = nowWibParts_();
+      var stRowsYear = readActiveRows_(ss, 'Settings');
+      var activeYear = (stRowsYear.length > 0 && stRowsYear[0].academicYear) ? String(stRowsYear[0].academicYear) : '2026/2027';
+      var newClsLevel = nameLevelHint || reqLevel || 'SMA/MA';
+      if (reqLevel && !nameLevelHint) newClsLevel = reqLevel;
+      var newClsGrade = inferGradeNumber_(newClsLevel, rawGrade, clsNameStr);
+      var newClsObj = {
+        id: generateId_('cls'),
+        name: clsNameStr,
+        grade: newClsGrade,
+        academicYear: activeYear,
+        level: newClsLevel,
+        homeRoomTeacherId: '',
+        homeRoomTeacherName: '',
+        status: 'aktif',
+        createdAt: parts.iso,
+        diubah_pada: parts.iso,
+        updatedBy: actor || 'admin'
+      };
+      appendObjectRow_(classesSheet, 'Classes', newClsObj);
+      writeAuditLog_(ss, actor || 'admin', 'CREATE', 'Classes', newClsObj.id, 'Tambah kelas otomatis "' + newClsObj.name + '" (' + newClsLevel + ') dari Data Siswa');
+      return { classObj: newClsObj, autoCreated: true };
+    }
+  }
+
+  if (clsIdStr) {
+    for (var k = 0; k < existingClasses.length; k++) {
+      if (String(existingClasses[k].id) === clsIdStr) {
+        return { classObj: existingClasses[k], autoCreated: false };
+      }
+    }
+  }
+
+  return { classObj: null, autoCreated: false };
 }
 
 function ensureStudentLevelSheetsExist_(ss) {
@@ -1737,13 +1809,27 @@ function updateRowCellsById_(sheet, schemaName, id, patchObj, expectedUpdatedAt)
 
   if (changedIndices.length === 1) {
     var colIdx = changedIndices[0];
-    sheet.getRange(rowIndex, colIdx + 1).setValue(nextRow[colIdx]);
+    var singleCell = sheet.getRange(rowIndex, colIdx + 1);
+    if (TEXT_FORMAT_COLUMNS[headers[colIdx]]) {
+      singleCell.setNumberFormat('@');
+    }
+    singleCell.setValue(nextRow[colIdx]);
   } else if (changedIndices.length === 2) {
     for (var ci = 0; ci < changedIndices.length; ci++) {
       var idx = changedIndices[ci];
-      sheet.getRange(rowIndex, idx + 1).setValue(nextRow[idx]);
+      var pairCell = sheet.getRange(rowIndex, idx + 1);
+      if (TEXT_FORMAT_COLUMNS[headers[idx]]) {
+        pairCell.setNumberFormat('@');
+      }
+      pairCell.setValue(nextRow[idx]);
     }
   } else if (changedIndices.length > 2) {
+    for (var mc = 0; mc < changedIndices.length; mc++) {
+      var mIdx = changedIndices[mc];
+      if (TEXT_FORMAT_COLUMNS[headers[mIdx]]) {
+        sheet.getRange(rowIndex, mIdx + 1).setNumberFormat('@');
+      }
+    }
     rowRange.setValues([nextRow]);
   }
 
@@ -3370,6 +3456,7 @@ function handleCreateGeneric_(ss, entity, data, actor) {
     obj.isActive = data.isActive === undefined ? true : !!data.isActive;
   }
 
+  var autoCreatedClassObj = null;
   if (entity === 'Students') {
     var sNis = String(data.nis || '').trim();
     var sName = String(data.name || '').trim();
@@ -3382,22 +3469,31 @@ function handleCreateGeneric_(ss, entity, data, actor) {
         return { success: false, mutated: false, error: 'NIS siswa sudah terdaftar.' };
       }
     }
-    var clsForStudent = null;
-    if (data.classId) {
-      var clsRowsForStd = readActiveRows_(ss, 'Classes');
-      for (var cs = 0; cs < clsRowsForStd.length; cs++) {
-        if (String(clsRowsForStd[cs].id) === String(data.classId)) {
-          clsForStudent = clsRowsForStd[cs];
-          break;
-        }
-      }
+    var clsResolvedCreate = resolveOrAutoCreateClassForStudent_(
+      ss,
+      data.classId,
+      data.className || data.kelas,
+      data.level,
+      data.grade,
+      actor
+    );
+    var clsForStudent = clsResolvedCreate.classObj;
+    if (clsResolvedCreate.autoCreated) {
+      autoCreatedClassObj = clsForStudent;
     }
     obj.nis = sNis;
+    obj.nisn = String(data.nisn || '').trim();
     obj.name = sName;
+    obj.classId = clsForStudent ? String(clsForStudent.id) : String(data.classId || '').trim();
+    obj.birthPlace = String(data.birthPlace || '').trim();
+    obj.birthDate = String(data.birthDate || '').trim();
     obj.address = String(data.address || '').trim();
-    obj.level = inferEducationLevel_(data.level, clsForStudent ? clsForStudent.grade : '', clsForStudent ? clsForStudent.name : '') || '';
+    obj.level = inferEducationLevel_(clsForStudent ? (clsForStudent.level || data.level) : data.level, clsForStudent ? clsForStudent.grade : '', clsForStudent ? clsForStudent.name : '') || '';
     obj.barcodeCard = data.barcodeCard || ('CARD-' + sNis);
     obj.isActive = true;
+    delete obj.className;
+    delete obj.kelas;
+    delete obj.grade;
   }
 
   if (entity === 'Classes') {
@@ -3519,7 +3615,7 @@ function handleCreateGeneric_(ss, entity, data, actor) {
     }
   }
 
-  return { success: true, id: newId, data: obj, message: 'Data berhasil ditambahkan.' };
+  return { success: true, id: newId, data: obj, autoCreatedClass: autoCreatedClassObj, message: 'Data berhasil ditambahkan.' };
 }
 
 function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
@@ -3629,24 +3725,74 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
     delete patch.subject;
   }
 
+  var autoCreatedClassOnUpdate = null;
   if (entity === 'Students') {
+    var curStudentsCheck = readActiveRows_(ss, 'Students');
+    var selfStudentRow = null;
+    for (var scSelf = 0; scSelf < curStudentsCheck.length; scSelf++) {
+      if (String(curStudentsCheck[scSelf].id) === String(id)) {
+        selfStudentRow = curStudentsCheck[scSelf];
+        break;
+      }
+    }
+
     if (patch.hasOwnProperty('nis')) {
       var nextNis = String(patch.nis || '').trim();
       if (!nextNis) {
         return { success: false, mutated: false, error: 'NIS siswa wajib diisi.' };
       }
-      var curStudentsCheck = readActiveRows_(ss, 'Students');
-      for (var stc = 0; stc < curStudentsCheck.length; stc++) {
-        if (String(curStudentsCheck[stc].id) !== String(id) &&
-            String(curStudentsCheck[stc].nis || '').trim() === nextNis) {
-          return { success: false, mutated: false, error: 'NIS "' + nextNis + '" sudah terdaftar pada siswa lain.' };
+      var selfCurrentNis = selfStudentRow ? String(selfStudentRow.nis || '').trim() : '';
+      // Only enforce duplicate NIS check if NIS actually changed from this student's existing NIS
+      if (nextNis !== selfCurrentNis) {
+        for (var stc = 0; stc < curStudentsCheck.length; stc++) {
+          if (String(curStudentsCheck[stc].id) !== String(id) &&
+              String(curStudentsCheck[stc].nis || '').trim() === nextNis) {
+            return { success: false, mutated: false, error: 'NIS "' + nextNis + '" sudah terdaftar pada siswa lain.' };
+          }
         }
       }
       patch.nis = nextNis;
     }
+    if (patch.hasOwnProperty('nisn')) {
+      patch.nisn = String(patch.nisn || '').trim();
+    }
+    if (patch.hasOwnProperty('birthPlace')) {
+      patch.birthPlace = String(patch.birthPlace || '').trim();
+    }
+    if (patch.hasOwnProperty('birthDate')) {
+      patch.birthDate = String(patch.birthDate || '').trim();
+    }
     if (patch.hasOwnProperty('address')) {
       patch.address = String(patch.address || '').trim();
     }
+
+    var incomingClassName = String(patch.className || patch.kelas || '').trim();
+    if (incomingClassName) {
+      var lvlForResolve = patch.hasOwnProperty('level')
+        ? patch.level
+        : (selfStudentRow ? selfStudentRow.level : '');
+      var clsResolvedUpd = resolveOrAutoCreateClassForStudent_(
+        ss,
+        patch.classId,
+        incomingClassName,
+        lvlForResolve,
+        patch.grade,
+        actor
+      );
+      if (clsResolvedUpd.classObj) {
+        patch.classId = String(clsResolvedUpd.classObj.id);
+        if (!patch.hasOwnProperty('level') || !String(patch.level || '').trim()) {
+          patch.level = inferEducationLevel_(clsResolvedUpd.classObj.level, clsResolvedUpd.classObj.grade, clsResolvedUpd.classObj.name);
+        }
+      }
+      if (clsResolvedUpd.autoCreated) {
+        autoCreatedClassOnUpdate = clsResolvedUpd.classObj;
+      }
+    }
+    delete patch.className;
+    delete patch.kelas;
+    delete patch.grade;
+
     if (patch.hasOwnProperty('level')) {
       patch.level = normalizeEducationLevel_(patch.level);
     }
@@ -3689,7 +3835,13 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
   }
 
   writeAuditLog_(ss, actor, 'UPDATE', entity, id, 'Perbarui ' + res.changedCount + ' sel pada ' + entity);
-  return { success: true, changedCount: res.changedCount, diubah_pada: res.diubah_pada, message: 'Data berhasil diperbarui.' };
+  return {
+    success: true,
+    changedCount: res.changedCount,
+    diubah_pada: res.diubah_pada,
+    autoCreatedClass: autoCreatedClassOnUpdate,
+    message: 'Data berhasil diperbarui.'
+  };
 }
 
 function deleteMatchingFaceTemplatesAndDrive_(ss, personId, personTypeFilter) {
