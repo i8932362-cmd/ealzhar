@@ -9,6 +9,7 @@ export const DEFAULT_LEVEL_CONFIGS: Record<EducationLevel, LevelConfig> = {
     unitName: 'SMA / MA MAMBAUL ULUM',
     principalName: 'Drs. H. Ahmad Fauzi, M.Pd.I',
     principalNip: 'NIY. 19780512 200501 1 003',
+    signaturePlaceDate: 'Jombang, 15 Juli 2026',
     websiteUrl: 'https://sma.mambaululum.sch.id',
     schoolAddress: 'Jl. Pesantren Mambaul Ulum Gedung A, Diwek, Jombang',
     vision: "Terwujudnya Generasi Qur'ani, Berakhlakul Karimah, Unggul dalam IPTEK dan Berdaya Saing Global.",
@@ -26,6 +27,7 @@ export const DEFAULT_LEVEL_CONFIGS: Record<EducationLevel, LevelConfig> = {
     unitName: 'SMP / MTs MAMBAUL ULUM',
     principalName: 'Hj. Siti Masruroh, S.Ag., M.Pd.',
     principalNip: 'NIY. 19820315 200801 2 004',
+    signaturePlaceDate: 'Jombang, 15 Juli 2026',
     websiteUrl: 'https://smp.mambaululum.sch.id',
     schoolAddress: 'Jl. Pesantren Mambaul Ulum Gedung B, Diwek, Jombang',
     vision: "Membentuk Insan Beriman, Berbudi Pekerti Luhur, Cerdas, dan Terampil Berlandaskan Aswaja.",
@@ -43,6 +45,7 @@ export const DEFAULT_LEVEL_CONFIGS: Record<EducationLevel, LevelConfig> = {
     unitName: 'SD / MI MAMBAUL ULUM',
     principalName: 'Muhammad Ridwan, S.Pd.I',
     principalNip: 'NIY. 19880720 201201 1 005',
+    signaturePlaceDate: 'Jombang, 15 Juli 2026',
     websiteUrl: 'https://sd.mambaululum.sch.id',
     schoolAddress: 'Jl. Pesantren Mambaul Ulum Gedung C, Diwek, Jombang',
     vision: "Ceria, Berkarakter Islami, Gemar Membaca Al-Qur'an dan Cinta Lingkungan.",
@@ -321,8 +324,10 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
           </div>
 
           {/* Principal Signature & Seal Box (Pojok Kanan Bawah) */}
-          <div className="text-right text-[7.5px] leading-tight relative pr-0.5 flex-shrink-0 max-w-[168px]">
-            <div className="text-slate-500 font-medium">Jombang, 15 Juli 2026</div>
+          <div className="text-right text-[7.5px] leading-tight relative pr-0.5 flex-shrink-0 max-w-[175px]">
+            <div className="text-slate-500 font-medium truncate">
+              {config.signaturePlaceDate?.trim() || 'Jombang, 15 Juli 2026'}
+            </div>
             <div className="text-[7.5px] font-bold text-slate-700 truncate">Kepala {config.unitName}</div>
 
             {/* Overlaid Signature and Seal */}

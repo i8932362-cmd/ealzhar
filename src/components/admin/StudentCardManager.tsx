@@ -47,7 +47,7 @@ interface StudentCardManagerProps {
   initialLevelConfigsJson?: string;
 }
 
-function parseLevelConfigsSafely(raw?: string): Partial<Record<EducationLevel, LevelConfig>> | null {
+function parseLevelConfigsSafely(raw?: string): Partial<Record<EducationLevel, Partial<LevelConfig>>> | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!trimmed || !trimmed.startsWith('{') || !trimmed.endsWith('}')) {
@@ -58,10 +58,31 @@ function parseLevelConfigsSafely(raw?: string): Partial<Record<EducationLevel, L
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return null;
     }
-    return parsed as Partial<Record<EducationLevel, LevelConfig>>;
+    return parsed as Partial<Record<EducationLevel, Partial<LevelConfig>>>;
   } catch {
     return null;
   }
+}
+
+function mergeWithDefaultLevelConfigs(
+  parsed?: Partial<Record<EducationLevel, Partial<LevelConfig>>> | null
+): Record<EducationLevel, LevelConfig> {
+  const result: Record<EducationLevel, LevelConfig> = {
+    'SMA/MA': { ...DEFAULT_LEVEL_CONFIGS['SMA/MA'] },
+    'SMP/MTS': { ...DEFAULT_LEVEL_CONFIGS['SMP/MTS'] },
+    'SD/MI': { ...DEFAULT_LEVEL_CONFIGS['SD/MI'] },
+  };
+  if (!parsed) return result;
+  (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
+    if (parsed[lvl] && typeof parsed[lvl] === 'object') {
+      result[lvl] = {
+        ...result[lvl],
+        ...parsed[lvl],
+        level: lvl,
+      };
+    }
+  });
+  return result;
 }
 
 export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
@@ -85,7 +106,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   // Custom Level Configs initialized from props or defaults
   const [levelConfigs, setLevelConfigs] = useState<Record<EducationLevel, LevelConfig>>(() => {
     const parsed = parseLevelConfigsSafely(initialLevelConfigsJson);
-    return parsed ? { ...DEFAULT_LEVEL_CONFIGS, ...parsed } : DEFAULT_LEVEL_CONFIGS;
+    return mergeWithDefaultLevelConfigs(parsed);
   });
 
   // Track face enrollments
@@ -110,7 +131,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     if (showConfigModal || isDirtyRef.current) return;
     const parsed = parseLevelConfigsSafely(initialLevelConfigsJson);
     if (parsed) {
-      setLevelConfigs(prev => ({ ...prev, ...parsed }));
+      setLevelConfigs(mergeWithDefaultLevelConfigs(parsed));
     }
   }, [initialLevelConfigsJson, showConfigModal]);
 
@@ -790,7 +811,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                       type="text"
                       value={levelConfigs[activeConfigTab].unitName}
                       onChange={e =>
-                        setLevelConfigs({
+                        updateLevelConfigs({
                           ...levelConfigs,
                           [activeConfigTab]: { ...levelConfigs[activeConfigTab], unitName: e.target.value },
                         })
@@ -809,7 +830,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                       value={levelConfigs[activeConfigTab].schoolAddress || ''}
                       placeholder={schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang'}
                       onChange={e =>
-                        setLevelConfigs({
+                        updateLevelConfigs({
                           ...levelConfigs,
                           [activeConfigTab]: { ...levelConfigs[activeConfigTab], schoolAddress: e.target.value },
                         })
@@ -826,6 +847,30 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                     <span>Kepala Sekolah & Tanda Tangan Resmi ({activeConfigTab})</span>
                   </div>
 
+                  <div>
+                    <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                      Alamat / Kota &amp; Tanggal di Atas TTD Kepala Sekolah ({activeConfigTab}):
+                    </label>
+                    <input
+                      type="text"
+                      value={levelConfigs[activeConfigTab].signaturePlaceDate ?? ''}
+                      placeholder="Contoh: Jombang, 15 Juli 2026"
+                      onChange={e =>
+                        updateLevelConfigs({
+                          ...levelConfigs,
+                          [activeConfigTab]: {
+                            ...levelConfigs[activeConfigTab],
+                            signaturePlaceDate: e.target.value,
+                          },
+                        })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-1 block">
+                      Tampil tepat di atas tulisan &ldquo;Kepala {levelConfigs[activeConfigTab].unitName}&rdquo; &amp; tanda tangan di pojok kanan bawah kartu depan.
+                    </span>
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
@@ -835,7 +880,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                         type="text"
                         value={levelConfigs[activeConfigTab].principalName}
                         onChange={e =>
-                          setLevelConfigs({
+                          updateLevelConfigs({
                             ...levelConfigs,
                             [activeConfigTab]: { ...levelConfigs[activeConfigTab], principalName: e.target.value },
                           })
@@ -852,7 +897,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                         type="text"
                         value={levelConfigs[activeConfigTab].principalNip}
                         onChange={e =>
-                          setLevelConfigs({
+                          updateLevelConfigs({
                             ...levelConfigs,
                             [activeConfigTab]: { ...levelConfigs[activeConfigTab], principalNip: e.target.value },
                           })
