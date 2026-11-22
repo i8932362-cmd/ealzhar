@@ -732,7 +732,7 @@ async function optimizeImageFileForDrive(
 export async function uploadImageAssetToDrive(
   file: File,
   options: {
-    purpose: 'card_asset' | 'school_logo' | 'logo' | 'signature' | 'watermark' | 'qr' | 'foundation_watermark' | 'foundation_qr';
+    purpose: 'card_asset' | 'school_logo' | 'logo' | 'signature' | 'stamp' | 'watermark' | 'qr' | 'foundation_watermark' | 'foundation_qr';
     fileName?: string;
     previousUrl?: string;
     trashPrevious?: boolean;

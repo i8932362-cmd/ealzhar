@@ -125,10 +125,10 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const [activeConfigTab, setActiveConfigTab] = useState<EducationLevel>('SMA/MA');
   const [isSavingConfig, setIsSavingConfig] = useState<boolean>(false);
   const [uploadingField, setUploadingField] = useState<
-    'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
+    'principalSignatureUrl' | 'stampUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
   >(null);
   const [deletingField, setDeletingField] = useState<
-    'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
+    'principalSignatureUrl' | 'stampUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
   >(null);
   const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const isDirtyRef = useRef<boolean>(false);
@@ -244,7 +244,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   // Handle Image File Upload Helper -> Direct upload to Google Drive Folder
   const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
-    field: 'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl'
+    field: 'principalSignatureUrl' | 'stampUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl'
   ) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -257,14 +257,16 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       return;
     }
 
-    const purposeMap: Record<typeof field, 'signature' | 'logo' | 'qr' | 'watermark'> = {
+    const purposeMap: Record<typeof field, 'signature' | 'stamp' | 'logo' | 'qr' | 'watermark'> = {
       principalSignatureUrl: 'signature',
+      stampUrl: 'stamp',
       logoUrl: 'logo',
       qrCodeUrl: 'qr',
       watermarkUrl: 'watermark',
     };
     const labelMap: Record<typeof field, string> = {
       principalSignatureUrl: 'Tanda Tangan',
+      stampUrl: 'Stempel Sekolah',
       logoUrl: 'Logo Sekolah',
       qrCodeUrl: 'QR Code',
       watermarkUrl: 'Watermark Kartu',
@@ -284,11 +286,19 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
         trashPrevious: false,
       });
 
+      const activeUpdates: Partial<LevelConfig> = {
+        [field]: uploaded.photoUrl,
+      };
+      // Automatically remove the hardcoded green seal when signature is replaced or custom stamp is uploaded
+      if (field === 'principalSignatureUrl' || field === 'stampUrl') {
+        activeUpdates.hideStamp = true;
+      }
+
       const nextConfigs: Record<EducationLevel, LevelConfig> = {
         ...levelConfigs,
         [activeConfigTab]: {
           ...levelConfigs[activeConfigTab],
-          [field]: uploaded.photoUrl,
+          ...activeUpdates,
         },
       };
       updateLevelConfigs(nextConfigs);
@@ -319,7 +329,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
   // Delete card image asset cleanly from BOTH Google Drive and Google Sheets
   const handleDeleteAssetField = async (
-    field: 'principalSignatureUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl',
+    field: 'principalSignatureUrl' | 'stampUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl',
     label: string
   ) => {
     const currentUrl = levelConfigs[activeConfigTab]?.[field];
@@ -328,14 +338,24 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     setSaveFeedback(null);
     try {
       if (extractDriveFileId(currentUrl)) {
-        await deleteImageAssetFromDrive(currentUrl);
+        const deleted = await deleteImageAssetFromDrive(currentUrl);
+        if (!deleted) {
+          throw new Error(`Gagal menghapus file ${label} dari Google Drive.`);
+        }
+      }
+
+      const activeUpdates: Partial<LevelConfig> = {
+        [field]: undefined,
+      };
+      if (field === 'stampUrl') {
+        activeUpdates.hideStamp = true;
       }
 
       const nextConfigs: Record<EducationLevel, LevelConfig> = {
         ...levelConfigs,
         [activeConfigTab]: {
           ...levelConfigs[activeConfigTab],
-          [field]: undefined,
+          ...activeUpdates,
         },
       };
       updateLevelConfigs(nextConfigs);
@@ -417,6 +437,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
         student.photoFileId ? `gas-photo://${student.photoFileId}` : undefined,
         cfg.logoUrl,
         cfg.principalSignatureUrl,
+        cfg.stampUrl,
         cfg.watermarkUrl,
         cfg.qrCodeUrl,
         watermarkUrl,
@@ -465,7 +486,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       const sharedUrls: Array<string | undefined> = [watermarkUrl];
       (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
         const c = levelConfigs[lvl];
-        if (c) sharedUrls.push(c.logoUrl, c.principalSignatureUrl, c.watermarkUrl, c.qrCodeUrl);
+        if (c) sharedUrls.push(c.logoUrl, c.principalSignatureUrl, c.stampUrl, c.watermarkUrl, c.qrCodeUrl);
       });
       await preloadDriveImageUrls([
         ...sharedUrls,
@@ -1044,60 +1065,184 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                   </div>
 
                   {/* Upload Signature Box */}
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <span className="font-bold text-slate-700 dark:text-slate-300 block">
-                        Upload Gambar Tanda Tangan Kepala Sekolah (PNG Transparan / JPG):
-                      </span>
-                      <span className="text-[11px] text-slate-500">
-                        Otomatis menyesuaikan dan terisi ke pojok kanan bawah kartu pelajar jenjang ini.
-                      </span>
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <span className="font-bold text-slate-700 dark:text-slate-300 block">
+                          Upload Gambar Tanda Tangan Kepala Sekolah (PNG Transparan / JPG):
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Ukuran proporsional otomatis mengikuti gambar asli (stempel hijau otomatis hilang saat TTD diganti).
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {levelConfigs[activeConfigTab].principalSignatureUrl ? (
+                          <div className="flex items-center gap-2">
+                            <DriveImage
+                              src={levelConfigs[activeConfigTab].principalSignatureUrl}
+                              alt="TTD"
+                              className="h-12 max-w-[140px] bg-white p-1 rounded-lg border border-slate-300 object-contain"
+                            />
+                            <button
+                              type="button"
+                              disabled={deletingField === 'principalSignatureUrl'}
+                              onClick={() => handleDeleteAssetField('principalSignatureUrl', 'Tanda Tangan Kepala Sekolah')}
+                              className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50"
+                              title="Hapus Tanda Tangan dari Drive & Sheet"
+                            >
+                              {deletingField === 'principalSignatureUrl' ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
+                          </div>
+                        ) : (
+                          <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/60 dark:text-blue-300 font-bold flex items-center gap-1.5 transition">
+                            {uploadingField === 'principalSignatureUrl' ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Mengunggah ke Drive...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>Pilih File TTD</span>
+                              </>
+                            )}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              disabled={Boolean(uploadingField) || Boolean(deletingField)}
+                              className="hidden"
+                              onChange={e => handleFileUpload(e, 'principalSignatureUrl')}
+                            />
+                          </label>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      {levelConfigs[activeConfigTab].principalSignatureUrl ? (
-                        <div className="flex items-center gap-2">
-                          <DriveImage
-                            src={levelConfigs[activeConfigTab].principalSignatureUrl}
-                            alt="TTD"
-                            className="h-10 bg-white p-1 rounded-lg border border-slate-300 object-contain"
-                          />
+                    {/* Signature Scale & Stamp Control */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200/70 dark:border-slate-700/70">
+                      <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-1.5">
+                        <div className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                          <span>Ukuran Tanda Tangan di Kartu</span>
+                          <span className="font-mono text-blue-600">
+                            {levelConfigs[activeConfigTab].signatureScale ?? 100}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={60}
+                          max={160}
+                          step={5}
+                          value={levelConfigs[activeConfigTab].signatureScale ?? 100}
+                          onChange={e =>
+                            updateLevelConfigs({
+                              ...levelConfigs,
+                              [activeConfigTab]: {
+                                ...levelConfigs[activeConfigTab],
+                                signatureScale: Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full accent-blue-600 cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[10px] text-slate-400">
+                          <span>Kecil (60%)</span>
                           <button
                             type="button"
-                            disabled={deletingField === 'principalSignatureUrl'}
-                            onClick={() => handleDeleteAssetField('principalSignatureUrl', 'Tanda Tangan Kepala Sekolah')}
-                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50"
-                            title="Hapus Tanda Tangan dari Drive & Sheet"
+                            onClick={() =>
+                              updateLevelConfigs({
+                                ...levelConfigs,
+                                [activeConfigTab]: {
+                                  ...levelConfigs[activeConfigTab],
+                                  signatureScale: 100,
+                                },
+                              })
+                            }
+                            className="text-blue-600 hover:underline font-semibold"
                           >
-                            {deletingField === 'principalSignatureUrl' ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-4 h-4" />
-                            )}
+                            Reset 100%
                           </button>
+                          <span>Besar (160%)</span>
                         </div>
-                      ) : (
-                        <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/60 dark:text-blue-300 font-bold flex items-center gap-1.5 transition">
-                          {uploadingField === 'principalSignatureUrl' ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              <span>Mengunggah ke Drive...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Upload className="w-3.5 h-3.5" />
-                              <span>Pilih File TTD</span>
-                            </>
-                          )}
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                            Stempel Kartu ({activeConfigTab})
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {levelConfigs[activeConfigTab].stampUrl ? (
+                              <>
+                                <DriveImage
+                                  src={levelConfigs[activeConfigTab].stampUrl}
+                                  alt="Stempel"
+                                  className="w-8 h-8 rounded bg-slate-50 p-0.5 border border-slate-300 object-contain"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={deletingField === 'stampUrl'}
+                                  onClick={() => handleDeleteAssetField('stampUrl', 'Stempel Sekolah')}
+                                  className="p-1 rounded-lg text-red-600 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50"
+                                  title="Hapus Stempel dari Drive & Sheet"
+                                >
+                                  {deletingField === 'stampUrl' ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </>
+                            ) : (
+                              <label className="cursor-pointer px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-300 text-[11px] font-bold flex items-center gap-1 transition">
+                                {uploadingField === 'stampUrl' ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Upload...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Upload className="w-3 h-3" />
+                                    <span>Ganti Stempel</span>
+                                  </>
+                                )}
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  disabled={Boolean(uploadingField) || Boolean(deletingField)}
+                                  className="hidden"
+                                  onChange={e => handleFileUpload(e, 'stampUrl')}
+                                />
+                              </label>
+                            )}
+                          </div>
+                        </div>
+
+                        <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer select-none">
                           <input
-                            type="file"
-                            accept="image/*"
-                            disabled={Boolean(uploadingField) || Boolean(deletingField)}
-                            className="hidden"
-                            onChange={e => handleFileUpload(e, 'principalSignatureUrl')}
+                            type="checkbox"
+                            checked={
+                              levelConfigs[activeConfigTab].hideStamp ??
+                              Boolean(levelConfigs[activeConfigTab].principalSignatureUrl)
+                            }
+                            onChange={e =>
+                              updateLevelConfigs({
+                                ...levelConfigs,
+                                [activeConfigTab]: {
+                                  ...levelConfigs[activeConfigTab],
+                                  hideStamp: e.target.checked,
+                                },
+                              })
+                            }
+                            className="rounded text-blue-600 focus:ring-blue-500"
                           />
+                          <span>Hapus / sembunyikan stempel hijau bawaan</span>
                         </label>
-                      )}
+                      </div>
                     </div>
                   </div>
                 </div>

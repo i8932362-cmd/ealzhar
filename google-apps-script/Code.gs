@@ -3065,6 +3065,7 @@ function handleUploadPhoto_(ss, payload, actor) {
     purpose === 'school_logo' ||
     purpose === 'logo' ||
     purpose === 'signature' ||
+    purpose === 'stamp' ||
     purpose === 'watermark' ||
     purpose === 'qr' ||
     purpose === 'foundation_watermark' ||

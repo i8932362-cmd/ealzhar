@@ -20,6 +20,9 @@ export interface LevelConfig {
   principalName: string;
   principalNip: string;
   principalSignatureUrl?: string;
+  signatureScale?: number;
+  stampUrl?: string;
+  hideStamp?: boolean;
   signaturePlaceDate?: string;
   logoUrl?: string;
   websiteUrl?: string;

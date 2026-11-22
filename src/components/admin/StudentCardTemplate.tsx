@@ -175,6 +175,12 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
   const { resolvedSrc: resolvedWatermark } = useResolvedDriveImage(activeWatermark);
   const { resolvedSrc: resolvedLogo } = useResolvedDriveImage(config.logoUrl);
   const { resolvedSrc: resolvedSignature } = useResolvedDriveImage(config.principalSignatureUrl);
+  const { resolvedSrc: resolvedStamp } = useResolvedDriveImage(config.stampUrl);
+
+  const sigScalePct = Math.min(180, Math.max(60, Number(config.signatureScale ?? 100)));
+  const sigScale = sigScalePct / 100;
+  const hasCustomSignature = Boolean(config.principalSignatureUrl && String(config.principalSignatureUrl).trim());
+  const shouldHideDefaultStamp = config.hideStamp ?? hasCustomSignature;
 
   return (
     <div
@@ -256,10 +262,6 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
                 className="w-full h-full object-cover object-top"
                 crossOrigin="anonymous"
               />
-              {/* Stamp overlay corner */}
-              <div className="absolute -bottom-2 -right-2 transform -rotate-12 pointer-events-none opacity-80">
-                <FoundationSealSvg color="#059669" />
-              </div>
             </div>
             <span className="text-[7.5px] font-bold text-slate-500 mt-0.5 uppercase tracking-wider">
               {student.gender === 'L' ? 'LAKI-LAKI' : 'PEREMPUAN'}
@@ -315,9 +317,9 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
         </div>
 
         {/* Bottom Row: Barcode NISN (Sebelah Kiri) & Tanda Tangan Kepala Sekolah (Sebelah Kanan) */}
-        <div className="flex items-end justify-between gap-2.5 pt-1 pb-0.5">
+        <div className="flex items-end justify-between gap-2 pt-1 pb-0.5">
           {/* Barcode NISN positioned cleanly to the left of the principal signature */}
-          <div className="flex-1 max-w-[222px] bg-white rounded-xl border border-slate-300 px-2.5 py-1.5 shadow-2xs flex flex-col items-center justify-center">
+          <div className="flex-1 max-w-[205px] bg-white rounded-xl border border-slate-300 px-2.5 py-1.5 shadow-2xs flex flex-col items-center justify-center">
             <div
               className="w-full flex items-center justify-center overflow-hidden h-8"
               dangerouslySetInnerHTML={{ __html: barcodeSvg }}
@@ -327,24 +329,49 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
             </div>
           </div>
 
-          {/* Principal Signature & Seal Box (Pojok Kanan Bawah) */}
-          <div className="text-right text-[7.5px] leading-tight relative pr-0.5 flex-shrink-0 max-w-[175px]">
+          {/* Principal Signature & Optional Custom Stamp Box (Pojok Kanan Bawah) */}
+          <div className="text-right text-[7.5px] leading-tight relative pr-0.5 flex-shrink-0 max-w-[196px]">
             <div className="text-slate-500 font-medium truncate">
               {config.signaturePlaceDate?.trim() || 'Jombang, 15 Juli 2026'}
             </div>
             <div className="text-[7.5px] font-bold text-slate-700 truncate">Kepala {config.unitName}</div>
 
-            {/* Overlaid Signature and Seal */}
-            <div className="h-8 relative my-0.5 flex justify-end items-center">
-              <div className="absolute right-10 -top-2">
-                <FoundationSealSvg color="#047857" />
-              </div>
+            {/* Signature & Stamp Layer */}
+            <div className="min-h-[34px] relative my-0.5 flex justify-end items-center">
+              {resolvedStamp ? (
+                <div className="absolute right-12 -top-2 pointer-events-none opacity-85 z-0">
+                  <img
+                    src={resolvedStamp}
+                    alt="Stempel Sekolah"
+                    className="max-h-14 max-w-14 w-auto h-auto object-contain select-none pointer-events-none"
+                  />
+                </div>
+              ) : !shouldHideDefaultStamp ? (
+                <div className="absolute right-10 -top-2 pointer-events-none z-0">
+                  <FoundationSealSvg color="#047857" />
+                </div>
+              ) : null}
+
               <div className="relative z-10 flex items-center justify-end">
                 {resolvedSignature ? (
                   <img
                     src={resolvedSignature}
                     alt={`TTD ${config.principalName}`}
-                    className="h-8 max-w-[100px] object-contain select-none pointer-events-none"
+                    style={
+                      sigScalePct !== 100
+                        ? {
+                            height: `${Math.round(44 * sigScale)}px`,
+                            width: 'auto',
+                            maxWidth: `${Math.min(194, Math.round(170 * sigScale))}px`,
+                          }
+                        : {
+                            width: 'auto',
+                            height: 'auto',
+                            maxHeight: '54px',
+                            maxWidth: '175px',
+                          }
+                    }
+                    className="object-contain select-none pointer-events-none block"
                   />
                 ) : (
                   <PrincipalSignatureSvg color="#1e3a8a" />
