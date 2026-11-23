@@ -534,9 +534,19 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     setIsSavingConfig(true);
     setSaveFeedback(null);
     try {
+      const sanitizedConfigs = (Object.keys(levelConfigs) as EducationLevel[]).reduce((acc, lvl) => {
+        const cfg = levelConfigs[lvl];
+        acc[lvl] = {
+          ...cfg,
+          missions: (cfg.missions || []).map((m) => String(m || '').trim()).filter(Boolean),
+        };
+        return acc;
+      }, {} as Record<EducationLevel, LevelConfig>);
+      setLevelConfigs(sanitizedConfigs);
+
       if (onUpdateSettings) {
         const success = await onUpdateSettings({
-          levelConfigsJson: JSON.stringify(levelConfigs),
+          levelConfigsJson: JSON.stringify(sanitizedConfigs),
         });
         if (success) {
           isDirtyRef.current = false;
@@ -1822,13 +1832,13 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                   </label>
                   <textarea
                     rows={3}
-                    value={levelConfigs[activeConfigTab].missions.join('\n')}
+                    value={(levelConfigs[activeConfigTab].missions || []).join('\n')}
                     onChange={e =>
                       updateLevelConfigs({
                         ...levelConfigs,
                         [activeConfigTab]: {
                           ...levelConfigs[activeConfigTab],
-                          missions: e.target.value.split('\n').filter(Boolean),
+                          missions: e.target.value.split('\n'),
                         },
                       })
                     }

@@ -4,6 +4,8 @@ import {
   formatStudentBirthLineForCard,
   getFallbackQrSvgDataUrl,
   getStudentInitialAvatarDataUrl,
+  computeBackCardTypography,
+  BackCardTypography,
 } from '../components/admin/StudentCardTemplate.tsx';
 
 export interface CardExportAssets {
@@ -237,38 +239,49 @@ function truncateTextToWidth(ctx: CanvasRenderingContext2D, text: string, maxWid
   return str.slice(0, Math.max(0, lo)) + ellipsis;
 }
 
-function wrapTextLines(
+function wrapTextLinesFull(
   ctx: CanvasRenderingContext2D,
   text: string,
-  maxWidth: number,
-  maxLines: number
+  maxWidth: number
 ): string[] {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [];
   const lines: string[] = [];
   let cur = '';
+
+  const pushWordHard = (word: string) => {
+    let chunk = '';
+    for (let i = 0; i < word.length; i++) {
+      const next = chunk + word[i];
+      if (ctx.measureText(next).width <= maxWidth || chunk.length === 0) {
+        chunk = next;
+      } else {
+        lines.push(chunk);
+        chunk = word[i];
+      }
+    }
+    cur = chunk;
+  };
+
   for (let i = 0; i < words.length; i++) {
-    const candidate = cur ? `${cur} ${words[i]}` : words[i];
+    const word = words[i];
+    const candidate = cur ? `${cur} ${word}` : word;
     if (ctx.measureText(candidate).width <= maxWidth) {
       cur = candidate;
     } else {
       if (cur) {
         lines.push(cur);
-        cur = words[i];
-      } else {
-        lines.push(truncateTextToWidth(ctx, words[i], maxWidth));
         cur = '';
       }
-      if (lines.length >= maxLines) {
-        break;
+      if (ctx.measureText(word).width <= maxWidth) {
+        cur = word;
+      } else {
+        pushWordHard(word);
       }
     }
   }
-  if (cur && lines.length < maxLines) {
+  if (cur) {
     lines.push(cur);
-  } else if (cur && lines.length === maxLines) {
-    const last = lines[maxLines - 1];
-    lines[maxLines - 1] = truncateTextToWidth(ctx, `${last} ${cur}`, maxWidth);
   }
   return lines;
 }
@@ -282,7 +295,7 @@ function drawWatermarkLayer(ctx: CanvasRenderingContext2D, watermarkImg: HTMLIma
     const fitted = fitContain(naturalW, naturalH, 224, 224);
     const wx = (CARD_W - fitted.drawW) / 2;
     const wy = (CARD_H - fitted.drawH) / 2;
-    ctx.globalAlpha = 0.095;
+    ctx.globalAlpha = 0.085;
     ctx.drawImage(graySource, wx, wy, fitted.drawW, fitted.drawH);
   } else {
     ctx.globalAlpha = 0.035;
@@ -335,8 +348,28 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   // 1. Watermark Layer
   drawWatermarkLayer(ctx, watermarkImg);
 
-  // 2. Top Header Bar
-  const headerH = 56;
+  // 2. Top Header Bar (auto-fits full school address across up to 2 lines cleanly)
+  ctx.font = `900 8px ${FONT_SANS}`;
+  const pillText = String(config.level || 'SMK').toUpperCase();
+  const pillTextW = ctx.measureText(pillText).width;
+  const pillW = Math.max(36, pillTextW + 16);
+  const pillH = 15;
+  const pillX = CARD_W - 14 - pillW;
+  const titleMaxW = Math.max(150, pillX - 68);
+
+  const addrHeaderText =
+    config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang • Terakreditasi "A"';
+  ctx.font = `500 7px ${FONT_SANS}`;
+  let headerAddrFontSize = 7;
+  let headerAddrLines = wrapTextLinesFull(ctx, addrHeaderText, titleMaxW);
+  if (headerAddrLines.length > 2) {
+    headerAddrFontSize = 6.2;
+    ctx.font = `500 ${headerAddrFontSize}px ${FONT_SANS}`;
+    headerAddrLines = wrapTextLinesFull(ctx, addrHeaderText, titleMaxW);
+  }
+  const visibleHeaderAddrLines = headerAddrLines.slice(0, 2);
+  const headerH = visibleHeaderAddrLines.length > 1 ? 61 : 55;
+
   ctx.fillStyle = config.headerColor || '#1e3a8a';
   ctx.fillRect(0, 0, CARD_W, headerH);
 
@@ -344,10 +377,10 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   ctx.fillStyle = '#fbbf24';
   ctx.fillRect(0, headerH - 2, CARD_W, 2);
 
-  // Logo circle at left (x=14, y=9, size=36)
+  // Logo circle at left (centered vertically in header)
   const logoX = 14;
-  const logoY = 9;
   const logoSize = 36;
+  const logoY = Math.round((headerH - 2 - logoSize) / 2);
   const logoCx = logoX + logoSize / 2;
   const logoCy = logoY + logoSize / 2;
   if (logoImg) {
@@ -378,19 +411,13 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   }
 
   // Right Jenjang Pill & "KARTU PELAJAR"
+  const pillY = Math.round((headerH - 2) / 2 - 14);
   ctx.save();
-  ctx.font = `900 8px ${FONT_SANS}`;
-  const pillText = String(config.level || 'SMK').toUpperCase();
-  const pillTextW = ctx.measureText(pillText).width;
-  const pillW = Math.max(36, pillTextW + 16);
-  const pillH = 15;
-  const pillX = CARD_W - 14 - pillW;
-  const pillY = 12;
-
   roundedRectPath(ctx, pillX, pillY, pillW, pillH, 7.5);
   ctx.fillStyle = '#fbbf24';
   ctx.fill();
 
+  ctx.font = `900 8px ${FONT_SANS}`;
   ctx.fillStyle = '#0f172a';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
@@ -399,33 +426,33 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   ctx.font = `600 7.5px ${FONT_SANS}`;
   ctx.fillStyle = '#bfdbfe';
   ctx.textAlign = 'right';
-  ctx.fillText('KARTU PELAJAR', CARD_W - 14, 37);
+  ctx.fillText('KARTU PELAJAR', CARD_W - 14, pillY + 24);
   ctx.restore();
 
   // Header Titles (x=60, bounded before pillX - 8)
-  const titleMaxW = Math.max(150, pillX - 68);
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
 
   ctx.font = `900 9.5px ${FONT_SANS}`;
   ctx.fillStyle = '#fcd34d';
-  ctx.fillText(truncateTextToWidth(ctx, schoolName.toUpperCase(), titleMaxW), 60, 8);
+  ctx.fillText(truncateTextToWidth(ctx, schoolName.toUpperCase(), titleMaxW), 60, 7.5);
 
   ctx.font = `900 12px ${FONT_SANS}`;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(truncateTextToWidth(ctx, config.unitName, titleMaxW), 60, 21);
+  ctx.fillText(truncateTextToWidth(ctx, config.unitName, titleMaxW), 60, 19.5);
 
-  const addrHeaderText =
-    config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang • Terakreditasi "A"';
-  ctx.font = `500 7.5px ${FONT_SANS}`;
+  ctx.font = `500 ${headerAddrFontSize}px ${FONT_SANS}`;
   ctx.fillStyle = '#dbeafe';
-  ctx.fillText(truncateTextToWidth(ctx, addrHeaderText, Math.min(220, titleMaxW)), 60, 38);
+  visibleHeaderAddrLines.forEach((line, idx) => {
+    ctx.fillText(line, 60, 35.5 + idx * 8.5);
+  });
   ctx.restore();
 
   // 3. Top Content Row: Student Portrait + Data Fields
+  const bodyTopY = headerH + 6;
   const photoX = 14;
-  const photoY = 63;
+  const photoY = bodyTopY;
   const photoW = 78;
   const photoH = 98;
 
@@ -451,7 +478,7 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   ctx.fillStyle = '#64748b';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  ctx.fillText(student.gender === 'L' ? 'LAKI-LAKI' : 'PEREMPUAN', photoX + photoW / 2, photoY + photoH + 4);
+  ctx.fillText(student.gender === 'L' ? 'LAKI-LAKI' : 'PEREMPUAN', photoX + photoW / 2, photoY + photoH + 3);
   ctx.restore();
 
   // Right Data Fields (x = 104 .. 411)
@@ -468,59 +495,72 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   // Nama Lengkap
   ctx.font = `700 7.5px ${FONT_SANS}`;
   ctx.fillStyle = '#94a3b8';
-  ctx.fillText('Nama Lengkap', fieldX, 63);
+  ctx.fillText('Nama Lengkap', fieldX, bodyTopY);
 
   ctx.font = `900 11.5px ${FONT_SANS}`;
   ctx.fillStyle = '#0f172a';
-  ctx.fillText(truncateTextToWidth(ctx, student.name.toUpperCase(), fieldMaxW), fieldX, 72);
+  ctx.fillText(truncateTextToWidth(ctx, student.name.toUpperCase(), fieldMaxW), fieldX, bodyTopY + 9);
 
   // NIS / NISN & Kelas & Unit
   ctx.font = `700 7.5px ${FONT_SANS}`;
   ctx.fillStyle = '#94a3b8';
-  ctx.fillText('NIS / NISN', fieldX, 92);
-  ctx.fillText('Kelas & Unit', col2X, 92);
+  ctx.fillText('NIS / NISN', fieldX, bodyTopY + 28);
+  ctx.fillText('Kelas & Unit', col2X, bodyTopY + 28);
 
   ctx.font = `900 9px ${FONT_MONO}`;
   const nisPrefix = `${student.nis} / `;
   ctx.fillStyle = '#1e293b';
-  ctx.fillText(nisPrefix, fieldX, 102);
+  ctx.fillText(nisPrefix, fieldX, bodyTopY + 37.5);
   const nisPrefixW = ctx.measureText(nisPrefix).width;
   ctx.fillStyle = '#1d4ed8';
-  ctx.fillText(truncateTextToWidth(ctx, student.nisn || student.nis, Math.max(30, colW - nisPrefixW)), fieldX + nisPrefixW, 102);
+  ctx.fillText(truncateTextToWidth(ctx, student.nisn || student.nis, Math.max(30, colW - nisPrefixW)), fieldX + nisPrefixW, bodyTopY + 37.5);
 
   ctx.font = `700 9px ${FONT_SANS}`;
   ctx.fillStyle = '#1e293b';
-  ctx.fillText(truncateTextToWidth(ctx, `${schoolClass?.name || 'Reguler'} (${config.level})`, colW), col2X, 102);
+  ctx.fillText(truncateTextToWidth(ctx, `${schoolClass?.name || 'Reguler'} (${config.level})`, colW), col2X, bodyTopY + 37.5);
 
   // Tempat, Tgl Lahir & Masa Berlaku
   ctx.font = `700 7.5px ${FONT_SANS}`;
   ctx.fillStyle = '#94a3b8';
-  ctx.fillText('Tempat, Tgl Lahir', fieldX, 120);
-  ctx.fillText('Masa Berlaku', col2X, 120);
+  ctx.fillText('Tempat, Tgl Lahir', fieldX, bodyTopY + 55);
+  ctx.fillText('Masa Berlaku', col2X, bodyTopY + 55);
 
   ctx.font = `600 8.5px ${FONT_SANS}`;
   ctx.fillStyle = '#334155';
-  ctx.fillText(truncateTextToWidth(ctx, formatStudentBirthLineForCard(student.birthPlace, student.birthDate), colW), fieldX, 130);
+  ctx.fillText(truncateTextToWidth(ctx, formatStudentBirthLineForCard(student.birthPlace, student.birthDate), colW), fieldX, bodyTopY + 64.5);
 
   ctx.fillStyle = '#047857';
-  ctx.fillText('Selama Menjadi Santri', col2X, 130);
+  ctx.fillText('Selama Menjadi Santri', col2X, bodyTopY + 64.5);
 
-  // Alamat
+  // Alamat Siswa (full wrapping across available space without truncation)
+  let addressBottomY = bodyTopY + 76;
   if (student.address) {
     ctx.font = `700 7px ${FONT_SANS}`;
     ctx.fillStyle = '#94a3b8';
-    ctx.fillText('Alamat', fieldX, 148);
+    ctx.fillText('Alamat', fieldX, bodyTopY + 81);
 
-    ctx.font = `500 8px ${FONT_SANS}`;
+    let addrFont = student.address.length > 90 ? 7.0 : 7.8;
+    ctx.font = `500 ${addrFont}px ${FONT_SANS}`;
+    let addrLines = wrapTextLinesFull(ctx, student.address, fieldMaxW);
+    if (addrLines.length > 2) {
+      addrFont = 6.7;
+      ctx.font = `500 ${addrFont}px ${FONT_SANS}`;
+      addrLines = wrapTextLinesFull(ctx, student.address, fieldMaxW);
+    }
+    const addrLineH = addrFont <= 7 ? 8.2 : 9.2;
     ctx.fillStyle = '#334155';
-    ctx.fillText(truncateTextToWidth(ctx, student.address, fieldMaxW), fieldX, 157);
+    addrLines.slice(0, 3).forEach((line, idx) => {
+      const ly = bodyTopY + 89.5 + idx * addrLineH;
+      ctx.fillText(line, fieldX, ly);
+      addressBottomY = ly + addrLineH;
+    });
   }
   ctx.restore();
 
-  // 4. Bottom Row: Barcode NISN (Left, raised cleanly) & Principal Signature + Stamp (Right)
+  // 4. Bottom Row: Barcode NISN (Left) & Principal Signature + Stamp (Right)
   const barcodeBoxX = 14;
-  const barcodeBoxY = 186;
-  const barcodeBoxW = 200;
+  const barcodeBoxY = Math.max(184, Math.min(194, Math.ceil(addressBottomY + 4)));
+  const barcodeBoxW = 204;
   const barcodeBoxH = 58;
 
   ctx.save();
@@ -561,11 +601,31 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   ctx.fillText(`NISN: ${student.nisn || student.nis}`, barcodeBoxX + barcodeBoxW / 2, barcodeBoxY + 41);
   ctx.restore();
 
-  // Principal Signature & Stamp (Bottom Right)
+  // Principal Signature & Stamp (Bottom Right) — dynamically flows just like flexbox preview
   const sigRightX = CARD_W - 15;
   const sigMaxTextW = 192;
   const hasCustomSignature = Boolean(config.principalSignatureUrl && String(config.principalSignatureUrl).trim()) || Boolean(signatureImg);
   const shouldHideDefaultStamp = config.hideStamp ?? hasCustomSignature;
+
+  const sigSlotBottom = 246;
+  const sigScalePct = Math.min(180, Math.max(60, Number(config.signatureScale ?? 100)));
+  const sigScale = sigScalePct / 100;
+
+  let computedSigW = 96;
+  let computedSigH = 36;
+  if (signatureImg) {
+    const maxSigH = sigScalePct !== 100 ? Math.round(44 * sigScale) : 54;
+    const maxSigW = sigScalePct !== 100 ? Math.min(194, Math.round(170 * sigScale)) : 175;
+    const fitSig = fitContain(signatureImg.naturalWidth, signatureImg.naturalHeight, maxSigW, maxSigH);
+    computedSigW = fitSig.drawW;
+    computedSigH = fitSig.drawH;
+  }
+
+  const slotH = Math.max(36, computedSigH);
+  const sigSlotTop = sigSlotBottom - slotH;
+  const sigY = sigSlotTop + (slotH - computedSigH) / 2;
+  const kepalaY = Math.min(191, sigSlotTop - 10);
+  const placeDateY = Math.min(181, kepalaY - 10);
 
   ctx.save();
   ctx.textAlign = 'right';
@@ -576,43 +636,33 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
   ctx.fillText(
     truncateTextToWidth(ctx, config.signaturePlaceDate?.trim() || 'Jombang, 15 Juli 2026', sigMaxTextW),
     sigRightX,
-    181
+    placeDateY
   );
 
   ctx.font = `700 7.5px ${FONT_SANS}`;
   ctx.fillStyle = '#334155';
-  ctx.fillText(truncateTextToWidth(ctx, `Kepala ${config.unitName}`, sigMaxTextW), sigRightX, 191);
+  ctx.fillText(truncateTextToWidth(ctx, `Kepala ${config.unitName}`, sigMaxTextW), sigRightX, kepalaY);
 
   // Stamp behind signature
+  const stampY = Math.max(kepalaY + 3, sigSlotTop - 4);
   if (stampImg) {
     ctx.save();
     ctx.globalAlpha = 0.85;
     const fitSt = fitContain(stampImg.naturalWidth, stampImg.naturalHeight, 56, 56);
-    ctx.drawImage(stampImg, sigRightX - 48 - fitSt.drawW, 194 + fitSt.offsetY, fitSt.drawW, fitSt.drawH);
+    ctx.drawImage(stampImg, sigRightX - 48 - fitSt.drawW, stampY + fitSt.offsetY, fitSt.drawW, fitSt.drawH);
     ctx.restore();
   } else if (!shouldHideDefaultStamp && fallbackSealImg) {
     ctx.save();
     ctx.globalAlpha = 0.85;
-    ctx.drawImage(fallbackSealImg, sigRightX - 96, 194, 56, 56);
+    ctx.drawImage(fallbackSealImg, sigRightX - 96, stampY, 56, 56);
     ctx.restore();
   }
 
   // Signature on top of stamp (following signatureScale)
-  const sigSlotTop = 201;
-  const sigSlotBottom = 247;
-  const sigSlotMidY = (sigSlotTop + sigSlotBottom) / 2;
-  const sigScalePct = Math.min(180, Math.max(60, Number(config.signatureScale ?? 100)));
-  const sigScale = sigScalePct / 100;
-
   if (signatureImg) {
-    const maxSigH = sigScalePct !== 100 ? Math.round(44 * sigScale) : 54;
-    const maxSigW = sigScalePct !== 100 ? Math.min(194, Math.round(170 * sigScale)) : 175;
-    const fitSig = fitContain(signatureImg.naturalWidth, signatureImg.naturalHeight, maxSigW, maxSigH);
-    const drawSigX = sigRightX - fitSig.drawW;
-    const drawSigY = Math.max(186, Math.min(sigSlotBottom - fitSig.drawH, sigSlotMidY - fitSig.drawH / 2));
-    ctx.drawImage(signatureImg, drawSigX, drawSigY, fitSig.drawW, fitSig.drawH);
+    ctx.drawImage(signatureImg, sigRightX - computedSigW, sigY, computedSigW, computedSigH);
   } else if (fallbackSigImg) {
-    ctx.drawImage(fallbackSigImg, sigRightX - 96, 206, 96, 36);
+    ctx.drawImage(fallbackSigImg, sigRightX - 96, sigY, 96, 36);
   }
 
   // Principal Name (underlined) + NIP
@@ -684,7 +734,7 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   ctx.save();
   if (logoImg) {
     const cx = pad + 12;
-    const cy = 26;
+    const cy = 24;
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.arc(cx, cy, 12, 0, Math.PI * 2);
@@ -699,7 +749,7 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
     const fitL = fitContain(logoImg.naturalWidth, logoImg.naturalHeight, 20, 20);
     ctx.drawImage(logoImg, cx - 10 + fitL.offsetX, cy - 10 + fitL.offsetY, fitL.drawW, fitL.drawH);
   } else if (fallbackEmblemImg) {
-    ctx.drawImage(fallbackEmblemImg, pad, 14, 24, 24);
+    ctx.drawImage(fallbackEmblemImg, pad, 12, 24, 24);
   }
   ctx.restore();
 
@@ -709,7 +759,7 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   const badgeLbl = 'VISI, MISI & TATA TERTIB';
   const badgeW = ctx.measureText(badgeLbl).width + 14;
   const badgeX = CARD_W - pad - badgeW;
-  roundedRectPath(ctx, badgeX, 16, badgeW, 17, 4);
+  roundedRectPath(ctx, badgeX, 15, badgeW, 17, 4);
   ctx.fillStyle = '#f1f5f9';
   ctx.fill();
   ctx.strokeStyle = '#cbd5e1';
@@ -719,7 +769,7 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   ctx.fillStyle = '#475569';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(badgeLbl, badgeX + badgeW / 2, 24.5);
+  ctx.fillText(badgeLbl, badgeX + badgeW / 2, 23.5);
 
   // Header Titles
   const backTitleMaxW = Math.max(120, badgeX - (pad + 32) - 8);
@@ -727,94 +777,187 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   ctx.textBaseline = 'top';
   ctx.font = `900 10px ${FONT_SANS}`;
   ctx.fillStyle = '#0f172a';
-  ctx.fillText(truncateTextToWidth(ctx, schoolName.toUpperCase(), backTitleMaxW), pad + 31, 15);
+  ctx.fillText(truncateTextToWidth(ctx, schoolName.toUpperCase(), backTitleMaxW), pad + 31, 13);
 
   ctx.font = `700 8.5px ${FONT_SANS}`;
   ctx.fillStyle = '#1d4ed8';
-  ctx.fillText(truncateTextToWidth(ctx, config.unitName, backTitleMaxW), pad + 31, 27);
+  ctx.fillText(truncateTextToWidth(ctx, config.unitName, backTitleMaxW), pad + 31, 25);
 
   // Divider under header
+  const headerDividerY = 43;
   ctx.strokeStyle = '#e2e8f0';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(pad, 45);
-  ctx.lineTo(CARD_W - pad, 45);
+  ctx.moveTo(pad, headerDividerY);
+  ctx.lineTo(CARD_W - pad, headerDividerY);
   ctx.stroke();
   ctx.restore();
 
-  // 3. Body Two Columns
-  const qrBoxW = 104;
-  const qrBoxX = CARD_W - pad - qrBoxW;
-  const qrBoxY = 56;
-  const qrBoxH = 148;
-  const leftColW = qrBoxX - pad - 12;
+  // Measure Footer Contact Info FIRST so full Alamat wraps cleanly & Visi/Misi get maximum vertical space
+  const rightFooter = `Web: ${cleanWebsiteUrl} • Telp: (0321) 876543`;
+  const footAddr = `Alamat: ${config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang'}`;
+  ctx.save();
+  ctx.font = `500 6.8px ${FONT_SANS}`;
+  const rightFooterW = ctx.measureText(rightFooter).width;
+  const leftFooterMaxW = Math.max(120, CARD_W - pad * 2 - rightFooterW - 10);
+  let footFontSize = 6.8;
+  let footAddrLines = wrapTextLinesFull(ctx, footAddr, leftFooterMaxW);
+  if (footAddrLines.length > 2) {
+    footFontSize = 6.1;
+    ctx.font = `500 ${footFontSize}px ${FONT_SANS}`;
+    footAddrLines = wrapTextLinesFull(ctx, footAddr, leftFooterMaxW);
+  }
+  const footLineH = footFontSize <= 6.2 ? 7.6 : 8.4;
+  const footBlockH = Math.max(footLineH, footAddrLines.length * footLineH);
+  const footerDividerY = CARD_H - 12 - footBlockH - 4;
+  ctx.restore();
 
-  // Left Column: Visi, Misi & Ketentuan
+  // 3. Body Two Columns (Left: full Visi, ALL Misi & Ketentuan; Right: QR Website Box)
+  const qrBoxW = 100;
+  const qrBoxX = CARD_W - pad - qrBoxW;
+  const qrBoxH = 144;
+  const qrBoxY = Math.round(headerDividerY + 6 + (footerDividerY - (headerDividerY + 6) - qrBoxH) / 2);
+  const leftColW = qrBoxX - pad - 10;
+
+  const cleanMissions = (config.missions || []).map((m) => String(m || '').trim()).filter(Boolean);
+  const rules = [
+    'Wajib dibawa setiap hari untuk presensi smart kiosk deteksi barcode & RFID.',
+    'Kartu tidak boleh dipinjamkan atau dialihkan kepada pihak lain.',
+    'Jika kartu hilang/rusak, segera lapor ke bagian Tata Usaha Yayasan.',
+  ];
+
+  const baseTier = computeBackCardTypography(config.vision, cleanMissions);
+  const candidateTiers: BackCardTypography[] = [
+    baseTier,
+    { headingSize: 7.4, visionSize: 6.8, visionLineHeight: 8.6, missionSize: 6.7, missionLineHeight: 8.5, ruleSize: 6.3, ruleLineHeight: 7.9, sectionGap: 3.5 },
+    { headingSize: 7.0, visionSize: 6.4, visionLineHeight: 8.0, missionSize: 6.3, missionLineHeight: 7.9, ruleSize: 5.9, ruleLineHeight: 7.4, sectionGap: 3 },
+    { headingSize: 6.6, visionSize: 5.9, visionLineHeight: 7.4, missionSize: 5.8, missionLineHeight: 7.3, ruleSize: 5.5, ruleLineHeight: 6.9, sectionGap: 2.5 },
+    { headingSize: 6.2, visionSize: 5.4, visionLineHeight: 6.7, missionSize: 5.3, missionLineHeight: 6.6, ruleSize: 5.1, ruleLineHeight: 6.4, sectionGap: 2 },
+    { headingSize: 5.8, visionSize: 4.9, visionLineHeight: 6.1, missionSize: 4.9, missionLineHeight: 6.1, ruleSize: 4.8, ruleLineHeight: 6.0, sectionGap: 1.5 },
+  ];
+
+  interface MeasuredBackLayout {
+    tier: BackCardTypography;
+    visionLines: string[];
+    missionBlocks: Array<{ prefix: string; lines: string[]; prefixW: number }>;
+    ruleBlocks: Array<{ lines: string[]; bulletW: number }>;
+    totalHeight: number;
+  }
+
+  const measureBackLayout = (tier: BackCardTypography): MeasuredBackLayout => {
+    ctx.font = `italic 500 ${tier.visionSize}px ${FONT_SANS}`;
+    const visionLines = wrapTextLinesFull(ctx, `"${String(config.vision || '').trim()}"`, leftColW - 8);
+
+    ctx.font = `500 ${tier.missionSize}px ${FONT_SANS}`;
+    const missionBlocks = cleanMissions.map((m, idx) => {
+      const prefix = `${idx + 1}. `;
+      const prefixW = Math.max(9, ctx.measureText(prefix).width + 1);
+      const lines = wrapTextLinesFull(ctx, m, leftColW - 4 - prefixW);
+      return { prefix, lines: lines.length ? lines : [''], prefixW };
+    });
+
+    ctx.font = `500 ${tier.ruleSize}px ${FONT_SANS}`;
+    const bulletW = Math.max(7, ctx.measureText('• ').width + 1);
+    const ruleBlocks = rules.map((r) => ({
+      lines: wrapTextLinesFull(ctx, r, leftColW - 4 - bulletW),
+      bulletW,
+    }));
+
+    const visionH = Math.max(tier.visionLineHeight, visionLines.length * tier.visionLineHeight);
+    const missionsH = missionBlocks.reduce(
+      (sum, b) => sum + b.lines.length * tier.missionLineHeight + 1.2,
+      0
+    );
+    const rulesH = ruleBlocks.reduce(
+      (sum, b) => sum + b.lines.length * tier.ruleLineHeight + 1,
+      0
+    );
+    const headingsH = (tier.headingSize + 3) * 3;
+    const totalHeight = headingsH + visionH + missionsH + rulesH + tier.sectionGap * 3 + 4;
+
+    return { tier, visionLines, missionBlocks, ruleBlocks, totalHeight };
+  };
+
+  const maxAvailBodyH = footerDividerY - (headerDividerY + 8);
+  let chosenLayout = measureBackLayout(candidateTiers[0]);
+  for (let i = 0; i < candidateTiers.length; i++) {
+    const measured = measureBackLayout(candidateTiers[i]);
+    chosenLayout = measured;
+    if (measured.totalHeight <= maxAvailBodyH) {
+      break;
+    }
+  }
+
+  // Draw Left Column: Complete Visi, ALL Misi & Ketentuan
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  let curY = 54;
+  const { tier, visionLines, missionBlocks, ruleBlocks } = chosenLayout;
+  let curY = headerDividerY + 6;
 
-  ctx.font = `900 8px ${FONT_SANS}`;
+  // Visi
+  ctx.font = `900 ${tier.headingSize}px ${FONT_SANS}`;
   ctx.fillStyle = '#1e40af';
   ctx.fillText('★ VISI SEKOLAH:', pad, curY);
-  curY += 12;
+  curY += tier.headingSize + 3;
 
-  ctx.font = `italic 500 7.5px ${FONT_SANS}`;
-  const visionLines = wrapTextLines(ctx, `"${config.vision}"`, leftColW - 10, 3);
-  const visionBlockH = Math.max(12, visionLines.length * 10);
+  ctx.font = `italic 500 ${tier.visionSize}px ${FONT_SANS}`;
+  const visionBlockH = Math.max(tier.visionLineHeight, visionLines.length * tier.visionLineHeight);
   ctx.fillStyle = '#3b82f6';
-  ctx.fillRect(pad + 1, curY, 2, visionBlockH - 2);
+  ctx.fillRect(pad + 1, curY, 2, Math.max(6, visionBlockH - 2));
   ctx.fillStyle = '#334155';
   visionLines.forEach((line, idx) => {
-    ctx.fillText(line, pad + 7, curY + idx * 10);
+    ctx.fillText(line, pad + 6, curY + idx * tier.visionLineHeight);
   });
-  curY += visionBlockH + 6;
+  curY += visionBlockH + tier.sectionGap;
 
-  // Misi
-  ctx.font = `900 8px ${FONT_SANS}`;
+  // Misi (semua poin, dibungkus penuh tanpa dipotong)
+  ctx.font = `900 ${tier.headingSize}px ${FONT_SANS}`;
   ctx.fillStyle = '#1e40af';
   ctx.fillText('★ MISI SEKOLAH:', pad, curY);
-  curY += 12;
+  curY += tier.headingSize + 3;
 
-  ctx.font = `500 7.5px ${FONT_SANS}`;
+  ctx.font = `500 ${tier.missionSize}px ${FONT_SANS}`;
   ctx.fillStyle = '#334155';
-  (config.missions || []).slice(0, 3).forEach((m, idx) => {
-    const mText = truncateTextToWidth(ctx, `${idx + 1}. ${m}`, leftColW - 4);
-    ctx.fillText(mText, pad + 2, curY);
-    curY += 10.5;
+  missionBlocks.forEach((blk) => {
+    blk.lines.forEach((line, li) => {
+      if (li === 0) {
+        ctx.fillText(blk.prefix, pad + 2, curY);
+      }
+      ctx.fillText(line, pad + 2 + blk.prefixW, curY);
+      curY += tier.missionLineHeight;
+    });
+    curY += 1.2;
   });
 
-  curY += 5;
+  curY += tier.sectionGap * 0.6;
   ctx.strokeStyle = '#e2e8f0';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(pad, curY);
   ctx.lineTo(pad + leftColW, curY);
   ctx.stroke();
-  curY += 6;
+  curY += tier.sectionGap + 1;
 
   // Ketentuan
-  ctx.font = `900 8px ${FONT_SANS}`;
+  ctx.font = `900 ${tier.headingSize}px ${FONT_SANS}`;
   ctx.fillStyle = '#92400e';
   ctx.fillText('★ KETENTUAN KARTU PELAJAR:', pad, curY);
-  curY += 11.5;
+  curY += tier.headingSize + 2.5;
 
-  const rules = [
-    '• Wajib dibawa setiap hari untuk presensi smart kiosk deteksi barcode & RFID.',
-    '• Kartu tidak boleh dipinjamkan atau dialihkan kepada pihak lain.',
-    '• Jika kartu hilang/rusak, segera lapor ke bagian Tata Usaha Yayasan.',
-  ];
-  ctx.font = `500 7px ${FONT_SANS}`;
+  ctx.font = `500 ${tier.ruleSize}px ${FONT_SANS}`;
   ctx.fillStyle = '#475569';
-  rules.forEach((rText) => {
-    const rLines = wrapTextLines(ctx, rText, leftColW - 2, 2);
-    rLines.forEach((rl) => {
-      if (curY < 236) {
-        ctx.fillText(rl, pad + 1, curY);
-        curY += 9.5;
+  ruleBlocks.forEach((blk) => {
+    blk.lines.forEach((line, li) => {
+      if (curY + tier.ruleLineHeight <= footerDividerY - 1) {
+        if (li === 0) {
+          ctx.fillText('•', pad + 2, curY);
+        }
+        ctx.fillText(line, pad + 2 + blk.bulletW, curY);
+        curY += tier.ruleLineHeight;
       }
     });
+    curY += 0.8;
   });
   ctx.restore();
 
@@ -831,11 +974,11 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   ctx.textBaseline = 'top';
   ctx.font = `900 7.5px ${FONT_SANS}`;
   ctx.fillStyle = '#1e293b';
-  ctx.fillText('KODE QR WEBSITE', qrBoxX + qrBoxW / 2, qrBoxY + 10);
+  ctx.fillText('KODE QR WEBSITE', qrBoxX + qrBoxW / 2, qrBoxY + 9);
 
-  const qrInnerW = 72;
+  const qrInnerW = 70;
   const qrInnerX = qrBoxX + (qrBoxW - qrInnerW) / 2;
-  const qrInnerY = qrBoxY + 24;
+  const qrInnerY = qrBoxY + 23;
   roundedRectPath(ctx, qrInnerX, qrInnerY, qrInnerW, qrInnerW, 8);
   ctx.fillStyle = '#ffffff';
   ctx.fill();
@@ -857,28 +1000,29 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   ctx.fillText('Scan untuk Info Resmi', qrBoxX + qrBoxW / 2, qrInnerY + qrInnerW + 17);
   ctx.restore();
 
-  // 4. Footer Contact Info
+  // 4. Footer Contact Info (Full wrapped Address on Left, Web & Telp on Right)
   ctx.save();
   ctx.strokeStyle = '#e2e8f0';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(pad, 245);
-  ctx.lineTo(CARD_W - pad, 245);
+  ctx.moveTo(pad, footerDividerY);
+  ctx.lineTo(CARD_W - pad, footerDividerY);
   ctx.stroke();
 
   ctx.textBaseline = 'top';
-  ctx.font = `500 7px ${FONT_SANS}`;
   ctx.fillStyle = '#64748b';
 
+  ctx.font = `500 6.8px ${FONT_SANS}`;
   ctx.textAlign = 'right';
-  const rightFooter = `Web: ${cleanWebsiteUrl} • Telp: (0321) 876543`;
-  const rightFooterW = ctx.measureText(rightFooter).width;
-  ctx.fillText(rightFooter, CARD_W - pad, 251);
+  const rightFooterY = CARD_H - 12 - 8.4;
+  ctx.fillText(rightFooter, CARD_W - pad, rightFooterY);
 
+  ctx.font = `500 ${footFontSize}px ${FONT_SANS}`;
   ctx.textAlign = 'left';
-  const leftFooterMaxW = Math.max(100, CARD_W - pad * 2 - rightFooterW - 10);
-  const footAddr = `Alamat: ${config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang'}`;
-  ctx.fillText(truncateTextToWidth(ctx, footAddr, leftFooterMaxW), pad, 251);
+  const footStartY = footerDividerY + 4;
+  footAddrLines.forEach((line, idx) => {
+    ctx.fillText(line, pad, footStartY + idx * footLineH);
+  });
   ctx.restore();
 
   // Outer card border

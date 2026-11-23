@@ -205,6 +205,67 @@ export function getStudentPhotoUrl(student: Student): string {
   return getStudentInitialAvatarDataUrl(student.name, student.gender);
 }
 
+export interface BackCardTypography {
+  headingSize: number;
+  visionSize: number;
+  visionLineHeight: number;
+  missionSize: number;
+  missionLineHeight: number;
+  ruleSize: number;
+  ruleLineHeight: number;
+  sectionGap: number;
+}
+
+export function computeBackCardTypography(vision: string, missions: string[]): BackCardTypography {
+  const cleanVision = String(vision || '').trim();
+  const cleanMissions = (missions || []).map((m) => String(m || '').trim()).filter(Boolean);
+  const tiers: BackCardTypography[] = [
+    { headingSize: 8.0, visionSize: 7.5, visionLineHeight: 9.6, missionSize: 7.4, missionLineHeight: 9.4, ruleSize: 6.8, ruleLineHeight: 8.6, sectionGap: 5 },
+    { headingSize: 7.6, visionSize: 7.0, visionLineHeight: 8.9, missionSize: 6.9, missionLineHeight: 8.8, ruleSize: 6.5, ruleLineHeight: 8.2, sectionGap: 4 },
+    { headingSize: 7.2, visionSize: 6.5, visionLineHeight: 8.2, missionSize: 6.4, missionLineHeight: 8.1, ruleSize: 6.1, ruleLineHeight: 7.7, sectionGap: 3.5 },
+    { headingSize: 6.8, visionSize: 6.0, visionLineHeight: 7.6, missionSize: 5.9, missionLineHeight: 7.5, ruleSize: 5.7, ruleLineHeight: 7.2, sectionGap: 3 },
+    { headingSize: 6.4, visionSize: 5.5, visionLineHeight: 6.9, missionSize: 5.4, missionLineHeight: 6.8, ruleSize: 5.3, ruleLineHeight: 6.7, sectionGap: 2.5 },
+    { headingSize: 6.0, visionSize: 5.0, visionLineHeight: 6.3, missionSize: 5.0, missionLineHeight: 6.3, ruleSize: 5.0, ruleLineHeight: 6.3, sectionGap: 2 },
+  ];
+
+  const colWidthPx = 282;
+  const maxBodyHeightPx = 178;
+
+  for (const tier of tiers) {
+    const vCharsPerLine = Math.max(24, Math.floor(colWidthPx / (tier.visionSize * 0.54)));
+    const mCharsPerLine = Math.max(24, Math.floor((colWidthPx - 14) / (tier.missionSize * 0.54)));
+    const rCharsPerLine = Math.max(26, Math.floor((colWidthPx - 12) / (tier.ruleSize * 0.54)));
+
+    const vLines = Math.max(1, Math.ceil((cleanVision.length + 2) / vCharsPerLine));
+    const mLines = cleanMissions.reduce(
+      (sum, m, idx) => sum + Math.max(1, Math.ceil((`${idx + 1}. ${m}`.length) / mCharsPerLine)),
+      0
+    );
+    const rules = [
+      'Wajib dibawa setiap hari untuk presensi smart kiosk deteksi barcode & RFID.',
+      'Kartu tidak boleh dipinjamkan atau dialihkan kepada pihak lain.',
+      'Jika kartu hilang/rusak, segera lapor ke bagian Tata Usaha Yayasan.',
+    ];
+    const rLines = rules.reduce(
+      (sum, r) => sum + Math.max(1, Math.ceil(r.length / rCharsPerLine)),
+      0
+    );
+
+    const estHeight =
+      (tier.headingSize + 3) * 3 +
+      vLines * tier.visionLineHeight +
+      mLines * tier.missionLineHeight +
+      rLines * tier.ruleLineHeight +
+      tier.sectionGap * 3 +
+      6;
+
+    if (estHeight <= maxBodyHeightPx) {
+      return tier;
+    }
+  }
+  return tiers[tiers.length - 1];
+}
+
 export interface ResolvedCardAssetOverrides {
   logo?: string;
   signature?: string;
@@ -346,9 +407,9 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
       {/* Top Header Bar */}
       <div
         style={{ backgroundColor: config.headerColor }}
-        className="px-3.5 py-2 text-white flex items-center justify-between border-b-2 border-amber-400 relative z-10"
+        className="px-3.5 py-2 text-white flex items-center justify-between gap-2 border-b-2 border-amber-400 relative z-10"
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-1 min-w-0">
           {/* Custom Uploaded Logo or Default Emblem */}
           {resolvedLogo ? (
             <img
@@ -361,18 +422,18 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
             <SchoolEmblemSvg className="w-9 h-9" />
           )}
 
-          <div className="leading-tight">
-            <div className="text-[10px] font-black tracking-widest text-amber-300 uppercase">
+          <div className="leading-tight min-w-0 flex-1">
+            <div className="text-[9.5px] font-black tracking-widest text-amber-300 uppercase truncate">
               {schoolName.toUpperCase()}
             </div>
-            <div className="text-xs font-black tracking-tight">{config.unitName}</div>
-            <div className="text-[7.5px] text-blue-100 opacity-90 truncate max-w-[210px]">
+            <div className="text-xs font-black tracking-tight truncate">{config.unitName}</div>
+            <div className="text-[7px] text-blue-100 opacity-95 leading-[1.15] break-words">
               {config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang • Terakreditasi "A"'}
             </div>
           </div>
         </div>
 
-        <div className="text-right flex flex-col items-end">
+        <div className="text-right flex flex-col items-end flex-shrink-0">
           <span className="px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-wider bg-amber-400 text-slate-900 shadow-xs">
             {config.level}
           </span>
@@ -444,7 +505,15 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
             {student.address && (
               <div className="pt-0.5">
                 <div className="text-[7px] font-bold text-slate-400 leading-none">Alamat</div>
-                <div className="text-[8px] font-medium text-slate-700 truncate">{student.address}</div>
+                <div
+                  style={{
+                    fontSize: student.address.length > 90 ? '7px' : '7.8px',
+                    lineHeight: '1.16',
+                  }}
+                  className="font-medium text-slate-700 break-words"
+                >
+                  {student.address}
+                </div>
               </div>
             )}
           </div>
@@ -579,6 +648,10 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
     resolvedCustomQr ||
     (!config.qrCodeUrl ? inlinedAutoQr : getFallbackQrSvgDataUrl(targetWebsite));
 
+  const cleanMissions = (config.missions || []).map((m) => String(m || '').trim()).filter(Boolean);
+  const backTypography = computeBackCardTypography(config.vision, cleanMissions);
+  const fullBackAddress = config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang';
+
   return (
     <div
       id={`${cardIdPrefix}card-back-${student.id}`}
@@ -588,7 +661,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
         backgroundColor: '#ffffff',
         fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
       }}
-      className="relative rounded-2xl overflow-hidden border-2 border-slate-300 shadow-xl flex flex-col justify-between select-none text-slate-800 p-3.5"
+      className="relative rounded-2xl overflow-hidden border-2 border-slate-300 shadow-xl flex flex-col justify-between select-none text-slate-800 px-3.5 py-3"
     >
       {/* Dynamic Watermark Background */}
       {resolvedWatermark ? (
@@ -597,7 +670,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
             src={resolvedWatermark}
             alt="Watermark"
             crossOrigin={resolvedWatermark.startsWith('data:') ? undefined : 'anonymous'}
-            className="w-56 h-56 object-contain opacity-[0.08] select-none pointer-events-none filter grayscale"
+            className="w-56 h-56 object-contain opacity-[0.085] select-none pointer-events-none filter grayscale"
           />
         </div>
       ) : (
@@ -609,8 +682,8 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
       )}
 
       {/* Header Back Side */}
-      <div className="border-b-2 border-slate-200 pb-1.5 flex items-center justify-between relative z-10">
-        <div className="flex items-center gap-2">
+      <div className="border-b-2 border-slate-200 pb-1.5 flex items-center justify-between gap-2 relative z-10 flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
           {resolvedLogo ? (
             <img
               src={resolvedLogo}
@@ -622,50 +695,80 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
             <SchoolEmblemSvg className="w-6 h-6" />
           )}
 
-          <div>
-            <div className="text-[10px] font-black text-slate-900 leading-none">
+          <div className="min-w-0">
+            <div className="text-[10px] font-black text-slate-900 leading-none truncate">
               {schoolName.toUpperCase()}
             </div>
-            <div className="text-[8.5px] font-bold text-blue-700 leading-tight">
+            <div className="text-[8.5px] font-bold text-blue-700 leading-tight truncate">
               {config.unitName}
             </div>
           </div>
         </div>
-        <span className="px-2 py-0.5 rounded text-[7.5px] font-bold bg-slate-100 text-slate-600 border border-slate-300 uppercase">
+        <span className="px-2 py-0.5 rounded text-[7.5px] font-bold bg-slate-100 text-slate-600 border border-slate-300 uppercase flex-shrink-0">
           VISI, MISI & TATA TERTIB
         </span>
       </div>
 
-      {/* Center Body: Two Columns (Left: Visi/Misi/Ketentuan, Right: QR Code Website) */}
-      <div className="py-1 flex items-start gap-3 relative z-10 flex-1">
+      {/* Center Body: Two Columns (Left: Visi/Misi/Ketentuan detail lengkap, Right: QR Code Website) */}
+      <div className="py-1 flex items-start gap-2.5 relative z-10 flex-1 min-h-0 overflow-hidden">
         {/* Left Column: Visi & Misi & Ketentuan */}
-        <div className="flex-1 space-y-1 text-[7.5px] leading-tight">
+        <div
+          className="flex-1 min-w-0 flex flex-col"
+          style={{ gap: `${backTypography.sectionGap}px` }}
+        >
           <div>
-            <span className="font-black text-slate-900 text-[8px] uppercase text-blue-800 block mb-0.5">
+            <span
+              style={{ fontSize: `${backTypography.headingSize}px`, lineHeight: 1.15 }}
+              className="font-black uppercase text-blue-800 block mb-0.5"
+            >
               ★ VISI SEKOLAH:
             </span>
-            <p className="italic text-slate-700 font-medium pl-1.5 border-l-2 border-blue-500">
+            <p
+              style={{
+                fontSize: `${backTypography.visionSize}px`,
+                lineHeight: `${backTypography.visionLineHeight}px`,
+              }}
+              className="italic text-slate-700 font-medium pl-1.5 border-l-2 border-blue-500 break-words"
+            >
               "{config.vision}"
             </p>
           </div>
 
           <div>
-            <span className="font-black text-slate-900 text-[8px] uppercase text-blue-800 block mb-0.5">
+            <span
+              style={{ fontSize: `${backTypography.headingSize}px`, lineHeight: 1.15 }}
+              className="font-black uppercase text-blue-800 block mb-0.5"
+            >
               ★ MISI SEKOLAH:
             </span>
-            <ol className="list-decimal list-inside space-y-0.5 text-slate-700 pl-0.5">
-              {config.missions.map((m, idx) => (
-                <li key={idx} className="line-clamp-1">{m}</li>
+            <ol
+              style={{
+                fontSize: `${backTypography.missionSize}px`,
+                lineHeight: `${backTypography.missionLineHeight}px`,
+              }}
+              className="list-decimal list-outside ml-3 space-y-0.5 text-slate-700"
+            >
+              {cleanMissions.map((m, idx) => (
+                <li key={idx} className="break-words pl-0.5">{m}</li>
               ))}
             </ol>
           </div>
 
           {/* Tata Tertib Kartu */}
           <div className="pt-0.5 border-t border-slate-200">
-            <span className="font-black text-slate-900 text-[8px] uppercase text-amber-800 block mb-0.5">
+            <span
+              style={{ fontSize: `${backTypography.headingSize}px`, lineHeight: 1.15 }}
+              className="font-black uppercase text-amber-800 block mb-0.5"
+            >
               ★ KETENTUAN KARTU PELAJAR:
             </span>
-            <ul className="list-disc list-inside space-y-0.5 text-slate-600 text-[7px]">
+            <ul
+              style={{
+                fontSize: `${backTypography.ruleSize}px`,
+                lineHeight: `${backTypography.ruleLineHeight}px`,
+              }}
+              className="list-disc list-outside ml-3 space-y-0.5 text-slate-600"
+            >
               <li>Wajib dibawa setiap hari untuk presensi smart kiosk deteksi barcode & RFID.</li>
               <li>Kartu tidak boleh dipinjamkan atau dialihkan kepada pihak lain.</li>
               <li>Jika kartu hilang/rusak, segera lapor ke bagian Tata Usaha Yayasan.</li>
@@ -674,12 +777,12 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
         </div>
 
         {/* Right Column: Dedicated QR Code Box for School/Foundation Website */}
-        <div className="w-[104px] flex-shrink-0 flex flex-col items-center justify-center bg-slate-50/90 rounded-xl border border-slate-200 p-2 text-center shadow-2xs">
+        <div className="w-[100px] flex-shrink-0 flex flex-col items-center justify-center bg-slate-50/90 rounded-xl border border-slate-200 p-2 text-center shadow-2xs self-center">
           <div className="text-[7.5px] font-black text-slate-800 uppercase tracking-tight mb-1">
             KODE QR WEBSITE
           </div>
 
-          <div className="w-18 h-18 bg-white p-1 rounded-lg border border-slate-300 shadow-2xs flex items-center justify-center overflow-hidden">
+          <div className="w-[70px] h-[70px] bg-white p-1 rounded-lg border border-slate-300 shadow-2xs flex items-center justify-center overflow-hidden">
             <img
               src={qrImageSrc}
               alt="QR Website"
@@ -688,7 +791,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
             />
           </div>
 
-          <div className="mt-1 text-[6.5px] text-blue-800 font-mono font-bold truncate max-w-[95px]" title={targetWebsite}>
+          <div className="mt-1 text-[6.5px] text-blue-800 font-mono font-bold truncate max-w-[92px]" title={targetWebsite}>
             {cleanWebsiteUrl}
           </div>
           <div className="text-[6px] text-slate-400 font-medium">
@@ -697,12 +800,12 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
         </div>
       </div>
 
-      {/* Footer Contact Info (Address and Website dynamically customized) */}
-      <div className="pt-1 border-t border-slate-200 flex items-center justify-between text-[7px] text-slate-500 font-medium relative z-10">
-        <div className="truncate max-w-[230px]">
-          <span>Alamat: {config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang'}</span>
+      {/* Footer Contact Info (Full Address and Website without truncation) */}
+      <div className="pt-1 border-t border-slate-200 flex items-end justify-between gap-2 text-[6.8px] leading-[1.15] text-slate-500 font-medium relative z-10 flex-shrink-0">
+        <div className="flex-1 min-w-0 break-words">
+          <span>Alamat: {fullBackAddress}</span>
         </div>
-        <div className="text-right">
+        <div className="text-right flex-shrink-0 whitespace-nowrap">
           <span>Web: {cleanWebsiteUrl} • Telp: (0321) 876543</span>
         </div>
       </div>
