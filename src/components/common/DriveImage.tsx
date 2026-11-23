@@ -1,5 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { extractDriveFileId, fetchDrivePhotoDataUrl } from '../../lib/api.ts';
+import {
+  extractDriveFileId,
+  fetchDrivePhotoDataUrl,
+  getCachedDrivePhotoDataUrl,
+  subscribeDrivePhotoCache,
+} from '../../lib/api.ts';
 
 export function useResolvedDriveImage(src?: string | null, fallback?: string): {
   resolvedSrc: string;
@@ -9,10 +14,13 @@ export function useResolvedDriveImage(src?: string | null, fallback?: string): {
   const driveId = extractDriveFileId(raw);
   const [resolvedSrc, setResolvedSrc] = useState<string>(() => {
     if (!raw) return fallback || '';
-    if (driveId) return fallback || '';
+    if (driveId) return getCachedDrivePhotoDataUrl(driveId) || fallback || '';
     return raw;
   });
-  const [isLoading, setIsLoading] = useState<boolean>(Boolean(driveId));
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    if (!driveId) return false;
+    return !getCachedDrivePhotoDataUrl(driveId);
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -27,18 +35,35 @@ export function useResolvedDriveImage(src?: string | null, fallback?: string): {
       return;
     }
 
-    setIsLoading(true);
-    fetchDrivePhotoDataUrl(driveId)
-      .then((dataUrl) => {
-        if (cancelled) return;
-        setResolvedSrc(dataUrl || fallback || '');
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
+    const syncFromCache = () => {
+      const hit = getCachedDrivePhotoDataUrl(driveId);
+      if (hit && !cancelled) {
+        setResolvedSrc(hit);
+        setIsLoading(false);
+        return true;
+      }
+      return false;
+    };
+
+    const unsubscribe = subscribeDrivePhotoCache(() => {
+      syncFromCache();
+    });
+
+    if (!syncFromCache()) {
+      setIsLoading(true);
+      fetchDrivePhotoDataUrl(driveId)
+        .then((dataUrl) => {
+          if (cancelled) return;
+          setResolvedSrc(dataUrl || fallback || '');
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoading(false);
+        });
+    }
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [raw, driveId, fallback]);
 

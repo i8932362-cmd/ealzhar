@@ -1,27 +1,32 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { Student, SchoolClass, EducationLevel, LevelConfig } from '../../types/index.ts';
 import { generateBarcodeSvg } from '../../lib/barcodeGenerator.ts';
-import { extractDriveFileId, fetchDrivePhotoDataUrl } from '../../lib/api.ts';
+import {
+  extractDriveFileId,
+  fetchDrivePhotoDataUrl,
+  fetchExternalImageAsDataUrl,
+  getCachedDrivePhotoDataUrl,
+} from '../../lib/api.ts';
 import { useResolvedDriveImage } from '../common/DriveImage.tsx';
 
 export const DEFAULT_LEVEL_CONFIGS: Record<EducationLevel, LevelConfig> = {
-  'SMA/MA': {
-    level: 'SMA/MA',
-    unitName: 'SMA / MA MAMBAUL ULUM',
+  SMK: {
+    level: 'SMK',
+    unitName: 'SMK MAMBAUL ULUM',
     principalName: 'Drs. H. Ahmad Fauzi, M.Pd.I',
     principalNip: 'NIY. 19780512 200501 1 003',
     signaturePlaceDate: 'Jombang, 15 Juli 2026',
-    websiteUrl: 'https://sma.mambaululum.sch.id',
+    websiteUrl: 'https://smk.mambaululum.sch.id',
     schoolAddress: 'Jl. Pesantren Mambaul Ulum Gedung A, Diwek, Jombang',
-    vision: "Terwujudnya Generasi Qur'ani, Berakhlakul Karimah, Unggul dalam IPTEK dan Berdaya Saing Global.",
+    vision: "Terwujudnya Generasi Qur'ani, Berakhlakul Karimah, Unggul dalam IPTEK, Vokasi, dan Berdaya Saing Global.",
     missions: [
-      'Menyeimbangkan pendidikan sains modern dan pendalaman kitab kuning.',
-      'Mengembangkan potensi riset ilmiah, tahfidz, dan bahasa internasional.',
-      'Membentuk kepemimpinan santri yang mandiri, kritis, dan berintegritas tinggi.'
+      'Menyeimbangkan pendidikan kejuruan modern, IPTEK, dan pendalaman kitab kuning.',
+      'Mengembangkan kompetensi vokasi unggul, riset ilmiah, tahfidz, dan bahasa internasional.',
+      'Membentuk lulusan santri yang terampil, mandiri, berakhlak, dan siap kerja.'
     ],
     accentColor: '#1e40af', // Blue-800
     headerColor: '#1e3a8a',
-    badgeText: 'JENJANG MENENGAH ATAS'
+    badgeText: 'JENJANG MENENGAH KEJURUAN'
   },
   'SMP/MTS': {
     level: 'SMP/MTS',
@@ -62,27 +67,32 @@ export const DEFAULT_LEVEL_CONFIGS: Record<EducationLevel, LevelConfig> = {
 };
 
 // Official Seal Stamp SVG
-export const FoundationSealSvg: React.FC<{ color?: string }> = ({ color = '#047857' }) => (
-  <svg viewBox="0 0 100 100" className="w-14 h-14 opacity-85 select-none pointer-events-none">
-    <circle cx="50" cy="50" r="46" fill="none" stroke={color} strokeWidth="2.5" strokeDasharray="3 1.5" />
-    <circle cx="50" cy="50" r="41" fill="none" stroke={color} strokeWidth="1.5" />
-    <circle cx="50" cy="50" r="28" fill="none" stroke={color} strokeWidth="1.2" />
-    <path id="curveTop" d="M 18,50 A 32,32 0 0,1 82,50" fill="none" />
-    <path id="curveBottom" d="M 82,50 A 32,32 0 0,1 18,50" fill="none" />
-    <text fill={color} fontSize="6.8" fontWeight="bold" letterSpacing="0.8">
-      <textPath href="#curveTop" startOffset="50%" textAnchor="middle">
-        YAYASAN MAMBAUL ULUM
-      </textPath>
-    </text>
-    <text fill={color} fontSize="6.2" fontWeight="bold" letterSpacing="0.6">
-      <textPath href="#curveBottom" startOffset="50%" textAnchor="middle">
-        ★ RESMI TERAKREDITASI ★
-      </textPath>
-    </text>
-    {/* Center Star & Book */}
-    <polygon points="50,38 53,44 60,45 55,49 56,56 50,52 44,56 45,49 40,45 47,44" fill={color} opacity="0.9" />
-  </svg>
-);
+export const FoundationSealSvg: React.FC<{ color?: string }> = ({ color = '#047857' }) => {
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const topId = `sealTop-${uid}`;
+  const bottomId = `sealBottom-${uid}`;
+  return (
+    <svg viewBox="0 0 100 100" className="w-14 h-14 opacity-85 select-none pointer-events-none">
+      <circle cx="50" cy="50" r="46" fill="none" stroke={color} strokeWidth="2.5" strokeDasharray="3 1.5" />
+      <circle cx="50" cy="50" r="41" fill="none" stroke={color} strokeWidth="1.5" />
+      <circle cx="50" cy="50" r="28" fill="none" stroke={color} strokeWidth="1.2" />
+      <path id={topId} d="M 18,50 A 32,32 0 0,1 82,50" fill="none" />
+      <path id={bottomId} d="M 82,50 A 32,32 0 0,1 18,50" fill="none" />
+      <text fill={color} fontSize="6.8" fontWeight="bold" letterSpacing="0.8">
+        <textPath href={`#${topId}`} startOffset="50%" textAnchor="middle">
+          YAYASAN MAMBAUL ULUM
+        </textPath>
+      </text>
+      <text fill={color} fontSize="6.2" fontWeight="bold" letterSpacing="0.6">
+        <textPath href={`#${bottomId}`} startOffset="50%" textAnchor="middle">
+          ★ RESMI TERAKREDITASI ★
+        </textPath>
+      </text>
+      {/* Center Star & Book */}
+      <polygon points="50,38 53,44 60,45 55,49 56,56 50,52 44,56 45,49 40,45 47,44" fill={color} opacity="0.9" />
+    </svg>
+  );
+};
 
 // Principal Calligraphic Signature SVG
 export const PrincipalSignatureSvg: React.FC<{ color?: string }> = ({ color = '#1e3a8a' }) => (
@@ -130,15 +140,78 @@ export function formatStudentBirthLineForCard(birthPlace?: string, birthDate?: s
   return '-';
 }
 
-// Helper to determine student photo url (fallback to clean avatar if none)
+// Offline-safe initial avatar SVG data URL (never fails CORS / rate limits)
+export function getStudentInitialAvatarDataUrl(name: string, gender: 'L' | 'P'): string {
+  const words = String(name || 'S')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const initials =
+    words.length >= 2
+      ? `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase()
+      : (words[0]?.slice(0, 2) || 'SW').toUpperCase();
+  const bg = gender === 'P' ? '#fbcfe8' : '#bfdbfe';
+  const ring = gender === 'P' ? '#f472b6' : '#60a5fa';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="320" viewBox="0 0 256 320">
+    <rect width="256" height="320" fill="${bg}" />
+    <circle cx="128" cy="112" r="56" fill="#ffffff" fill-opacity="0.72" stroke="${ring}" stroke-width="4" />
+    <text x="128" y="128" text-anchor="middle" font-family="Arial, sans-serif" font-size="44" font-weight="800" fill="#1e3a8a">${initials}</text>
+    <path d="M56 290c0-44 32-72 72-72s72 28 72 72" fill="#1e3a8a" fill-opacity="0.16" />
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+// Offline-safe deterministic QR-style fallback SVG if external QR endpoint is unreachable
+export function getFallbackQrSvgDataUrl(seedText: string): string {
+  const str = String(seedText || 'https://mambaululum.sch.id');
+  const size = 21;
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const rects: string[] = [];
+  const isFinder = (r: number, c: number) =>
+    (r < 7 && c < 7) || (r < 7 && c >= size - 7) || (r >= size - 7 && c < 7);
+
+  const drawFinder = (r0: number, c0: number) => {
+    rects.push(`<rect x="${c0}" y="${r0}" width="7" height="7" fill="#1e3a8a"/>`);
+    rects.push(`<rect x="${c0 + 1}" y="${r0 + 1}" width="5" height="5" fill="#ffffff"/>`);
+    rects.push(`<rect x="${c0 + 2}" y="${r0 + 2}" width="3" height="3" fill="#1e3a8a"/>`);
+  };
+  drawFinder(0, 0);
+  drawFinder(0, size - 7);
+  drawFinder(size - 7, 0);
+
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (isFinder(r, c)) continue;
+      hash ^= (r * 31 + c * 17) + 1;
+      hash = Math.imul(hash, 16777619);
+      if ((hash >>> 0) % 2 === 0) {
+        rects.push(`<rect x="${c}" y="${r}" width="1" height="1" fill="#1e3a8a"/>`);
+      }
+    }
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 25 25" width="150" height="150"><rect x="-2" y="-2" width="25" height="25" fill="#ffffff"/>${rects.join('')}</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+// Helper to determine student photo url (fallback to offline-safe avatar if none)
 export function getStudentPhotoUrl(student: Student): string {
   if (student.photoUrl && student.photoUrl.trim().length > 10) {
     return student.photoUrl;
   }
-  const isFemale = student.gender === 'P';
-  const bg = isFemale ? 'fbcfe8' : 'bfdbfe';
-  const nameInitial = encodeURIComponent(student.name);
-  return `https://ui-avatars.com/api/?name=${nameInitial}&background=${bg}&color=1e3a8a&size=256&bold=true&font-size=0.45`;
+  return getStudentInitialAvatarDataUrl(student.name, student.gender);
+}
+
+export interface ResolvedCardAssetOverrides {
+  logo?: string;
+  signature?: string;
+  stamp?: string;
+  watermark?: string;
+  qr?: string;
+  studentPhoto?: string;
 }
 
 interface StudentCardProps {
@@ -146,11 +219,14 @@ interface StudentCardProps {
   schoolClass?: SchoolClass;
   schoolName: string;
   schoolAddress?: string;
+  schoolLogo?: string;
   foundationWebsite?: string;
   watermarkUrl?: string;
   hasFaceEnrolled?: boolean;
   config?: LevelConfig;
   cardSide?: 'front' | 'back';
+  cardIdPrefix?: string;
+  resolvedAssetOverrides?: ResolvedCardAssetOverrides;
 }
 
 // ============================================================================
@@ -161,25 +237,48 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
   schoolClass,
   schoolName,
   schoolAddress,
+  schoolLogo,
   watermarkUrl,
-  hasFaceEnrolled = false,
-  config = DEFAULT_LEVEL_CONFIGS['SMA/MA'],
+  config = DEFAULT_LEVEL_CONFIGS['SMK'],
+  cardIdPrefix = '',
+  resolvedAssetOverrides,
 }) => {
   const barcodeValue = student.nisn || student.barcodeCard || student.nis;
   const barcodeSvg = generateBarcodeSvg(barcodeValue, 34);
-  const fallbackPhotoUrl = getStudentPhotoUrl({ ...student, photoUrl: '' });
+  const fallbackPhotoUrl = getStudentInitialAvatarDataUrl(student.name, student.gender);
+  const overridePhoto = resolvedAssetOverrides?.studentPhoto;
+
   const [photoUrl, setPhotoUrl] = useState<string>(() => {
+    if (overridePhoto) return overridePhoto;
     const driveId = extractDriveFileId(student.photoUrl) || student.photoFileId;
-    return driveId ? fallbackPhotoUrl : getStudentPhotoUrl(student);
+    if (driveId) {
+      return getCachedDrivePhotoDataUrl(driveId) || fallbackPhotoUrl;
+    }
+    return getStudentPhotoUrl(student);
   });
 
   useEffect(() => {
+    if (overridePhoto) {
+      setPhotoUrl(overridePhoto);
+      return;
+    }
     let cancelled = false;
     const driveId = extractDriveFileId(student.photoUrl) || student.photoFileId;
     if (driveId) {
+      const cached = getCachedDrivePhotoDataUrl(driveId);
+      if (cached) {
+        setPhotoUrl(cached);
+        return;
+      }
       fetchDrivePhotoDataUrl(driveId).then(dataUrl => {
         if (!cancelled && dataUrl) {
           setPhotoUrl(dataUrl);
+        }
+      });
+    } else if (student.photoUrl && student.photoUrl.trim().length > 10 && !student.photoUrl.startsWith('data:')) {
+      fetchExternalImageAsDataUrl(student.photoUrl).then(dataUrl => {
+        if (!cancelled) {
+          setPhotoUrl(dataUrl || student.photoUrl || fallbackPhotoUrl);
         }
       });
     } else {
@@ -188,13 +287,27 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [student]);
+  }, [student, overridePhoto, fallbackPhotoUrl]);
 
   const activeWatermark = config.watermarkUrl || watermarkUrl;
-  const { resolvedSrc: resolvedWatermark } = useResolvedDriveImage(activeWatermark);
-  const { resolvedSrc: resolvedLogo } = useResolvedDriveImage(config.logoUrl);
-  const { resolvedSrc: resolvedSignature } = useResolvedDriveImage(config.principalSignatureUrl);
-  const { resolvedSrc: resolvedStamp } = useResolvedDriveImage(config.stampUrl);
+  const activeLogo = config.logoUrl || schoolLogo;
+  const { resolvedSrc: resolvedWatermarkHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.watermark !== undefined ? undefined : activeWatermark
+  );
+  const { resolvedSrc: resolvedLogoHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.logo !== undefined ? undefined : activeLogo
+  );
+  const { resolvedSrc: resolvedSignatureHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.signature !== undefined ? undefined : config.principalSignatureUrl
+  );
+  const { resolvedSrc: resolvedStampHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.stamp !== undefined ? undefined : config.stampUrl
+  );
+
+  const resolvedWatermark = resolvedAssetOverrides?.watermark !== undefined ? resolvedAssetOverrides.watermark : resolvedWatermarkHook;
+  const resolvedLogo = resolvedAssetOverrides?.logo !== undefined ? resolvedAssetOverrides.logo : resolvedLogoHook;
+  const resolvedSignature = resolvedAssetOverrides?.signature !== undefined ? resolvedAssetOverrides.signature : resolvedSignatureHook;
+  const resolvedStamp = resolvedAssetOverrides?.stamp !== undefined ? resolvedAssetOverrides.stamp : resolvedStampHook;
 
   const sigScalePct = Math.min(180, Math.max(60, Number(config.signatureScale ?? 100)));
   const sigScale = sigScalePct / 100;
@@ -203,7 +316,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
 
   return (
     <div
-      id={`card-front-${student.id}`}
+      id={`${cardIdPrefix}card-front-${student.id}`}
       style={{
         width: '425px',
         height: '272px',
@@ -218,6 +331,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
           <img
             src={resolvedWatermark}
             alt="Watermark"
+            crossOrigin={resolvedWatermark.startsWith('data:') ? undefined : 'anonymous'}
             className="w-56 h-56 object-contain opacity-[0.08] select-none pointer-events-none filter grayscale"
           />
         </div>
@@ -240,6 +354,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
             <img
               src={resolvedLogo}
               alt="Logo"
+              crossOrigin={resolvedLogo.startsWith('data:') ? undefined : 'anonymous'}
               className="w-9 h-9 object-contain rounded-full bg-white p-0.5 border border-amber-300 shadow-xs flex-shrink-0"
             />
           ) : (
@@ -278,8 +393,8 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
               <img
                 src={photoUrl}
                 alt={student.name}
+                crossOrigin={photoUrl.startsWith('data:') ? undefined : 'anonymous'}
                 className="w-full h-full object-cover object-top"
-                crossOrigin="anonymous"
               />
             </div>
             <span className="text-[7.5px] font-bold text-slate-500 mt-0.5 uppercase tracking-wider">
@@ -362,6 +477,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
                   <img
                     src={resolvedStamp}
                     alt="Stempel Sekolah"
+                    crossOrigin={resolvedStamp.startsWith('data:') ? undefined : 'anonymous'}
                     className="max-h-14 max-w-14 w-auto h-auto object-contain select-none pointer-events-none"
                   />
                 </div>
@@ -376,6 +492,7 @@ export const StudentCardFront: React.FC<StudentCardProps> = ({
                   <img
                     src={resolvedSignature}
                     alt={`TTD ${config.principalName}`}
+                    crossOrigin={resolvedSignature.startsWith('data:') ? undefined : 'anonymous'}
                     style={
                       sigScalePct !== 100
                         ? {
@@ -415,27 +532,56 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
   student,
   schoolName,
   schoolAddress,
+  schoolLogo,
   foundationWebsite,
   watermarkUrl,
-  config = DEFAULT_LEVEL_CONFIGS['SMA/MA'],
+  config = DEFAULT_LEVEL_CONFIGS['SMK'],
+  cardIdPrefix = '',
+  resolvedAssetOverrides,
 }) => {
   const activeWatermark = config.watermarkUrl || watermarkUrl;
+  const activeLogo = config.logoUrl || schoolLogo;
   const targetWebsite = config.websiteUrl || foundationWebsite || 'https://mambaululum.sch.id';
   const cleanWebsiteUrl = targetWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  const { resolvedSrc: resolvedWatermark } = useResolvedDriveImage(activeWatermark);
-  const { resolvedSrc: resolvedLogo } = useResolvedDriveImage(config.logoUrl);
-  const { resolvedSrc: resolvedCustomQr } = useResolvedDriveImage(config.qrCodeUrl);
-  
-  // Auto QR Code generator link or uploaded custom QR
+
+  const { resolvedSrc: resolvedWatermarkHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.watermark !== undefined ? undefined : activeWatermark
+  );
+  const { resolvedSrc: resolvedLogoHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.logo !== undefined ? undefined : activeLogo
+  );
+  const { resolvedSrc: resolvedCustomQrHook } = useResolvedDriveImage(
+    resolvedAssetOverrides?.qr !== undefined ? undefined : config.qrCodeUrl
+  );
+
+  const resolvedWatermark = resolvedAssetOverrides?.watermark !== undefined ? resolvedAssetOverrides.watermark : resolvedWatermarkHook;
+  const resolvedLogo = resolvedAssetOverrides?.logo !== undefined ? resolvedAssetOverrides.logo : resolvedLogoHook;
+  const resolvedCustomQr = resolvedAssetOverrides?.qr !== undefined ? resolvedAssetOverrides.qr : resolvedCustomQrHook;
+
+  const remoteQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(targetWebsite)}&bgcolor=ffffff&color=1e3a8a`;
+  const [inlinedAutoQr, setInlinedAutoQr] = useState<string>(() => getFallbackQrSvgDataUrl(targetWebsite));
+
+  useEffect(() => {
+    if (resolvedAssetOverrides?.qr || config.qrCodeUrl) return;
+    let cancelled = false;
+    fetchExternalImageAsDataUrl(remoteQrUrl).then((dataUrl) => {
+      if (!cancelled && dataUrl) {
+        setInlinedAutoQr(dataUrl);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteQrUrl, resolvedAssetOverrides?.qr, config.qrCodeUrl]);
+
   const qrImageSrc =
+    resolvedAssetOverrides?.qr ||
     resolvedCustomQr ||
-    (!config.qrCodeUrl
-      ? `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(targetWebsite)}&bgcolor=ffffff&color=1e3a8a`
-      : '');
+    (!config.qrCodeUrl ? inlinedAutoQr : getFallbackQrSvgDataUrl(targetWebsite));
 
   return (
     <div
-      id={`card-back-${student.id}`}
+      id={`${cardIdPrefix}card-back-${student.id}`}
       style={{
         width: '425px',
         height: '272px',
@@ -450,6 +596,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
           <img
             src={resolvedWatermark}
             alt="Watermark"
+            crossOrigin={resolvedWatermark.startsWith('data:') ? undefined : 'anonymous'}
             className="w-56 h-56 object-contain opacity-[0.08] select-none pointer-events-none filter grayscale"
           />
         </div>
@@ -468,6 +615,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
             <img
               src={resolvedLogo}
               alt="Logo"
+              crossOrigin={resolvedLogo.startsWith('data:') ? undefined : 'anonymous'}
               className="w-6 h-6 object-contain rounded-full bg-white p-0.5 border border-slate-300 flex-shrink-0"
             />
           ) : (
@@ -530,13 +678,13 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
           <div className="text-[7.5px] font-black text-slate-800 uppercase tracking-tight mb-1">
             KODE QR WEBSITE
           </div>
-          
+
           <div className="w-18 h-18 bg-white p-1 rounded-lg border border-slate-300 shadow-2xs flex items-center justify-center overflow-hidden">
             <img
               src={qrImageSrc}
               alt="QR Website"
+              crossOrigin={qrImageSrc.startsWith('data:') ? undefined : 'anonymous'}
               className="w-full h-full object-contain"
-              crossOrigin="anonymous"
             />
           </div>
 

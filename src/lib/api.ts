@@ -620,19 +620,55 @@ export async function syncOfflineQueue(): Promise<{ synced: number; failed: numb
 
 const photoCache = new Map<string, string>();
 const inflightPhotoRequests = new Map<string, Promise<string | null>>();
+const externalImageCache = new Map<string, string>();
+const inflightExternalRequests = new Map<string, Promise<string | null>>();
+const photoCacheListeners = new Set<() => void>();
+
+function notifyPhotoCacheListeners(): void {
+  photoCacheListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // Ignore subscriber error
+    }
+  });
+}
+
+export function subscribeDrivePhotoCache(listener: () => void): () => void {
+  photoCacheListeners.add(listener);
+  return () => {
+    photoCacheListeners.delete(listener);
+  };
+}
 
 export function extractDriveFileId(photoUrl?: string): string | null {
   if (!photoUrl) return null;
-  if (photoUrl.startsWith('gas-photo://')) {
-    return photoUrl.replace('gas-photo://', '').trim() || null;
+  const trimmed = String(photoUrl).trim();
+  if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return null;
+  if (trimmed.startsWith('gas-photo://')) {
+    return trimmed.replace('gas-photo://', '').trim() || null;
   }
+  const filePathMatch = trimmed.match(/^https?:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i);
+  if (filePathMatch?.[1]) return filePathMatch[1];
+  const ucOrOpenMatch = trimmed.match(/^https?:\/\/drive\.google\.com\/(?:open|uc|thumbnail)\?(?:[^#]*&)?id=([a-zA-Z0-9_-]+)/i);
+  if (ucOrOpenMatch?.[1]) return ucOrOpenMatch[1];
+  const lh3Match = trimmed.match(/^https?:\/\/lh\d+\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/i);
+  if (lh3Match?.[1]) return lh3Match[1];
   return null;
+}
+
+export function getCachedDrivePhotoDataUrl(fileIdOrUrl?: string): string | null {
+  if (!fileIdOrUrl) return null;
+  const cleanId = extractDriveFileId(fileIdOrUrl) || String(fileIdOrUrl).trim();
+  if (!cleanId) return null;
+  return photoCache.get(cleanId) || null;
 }
 
 export function primeDrivePhotoCache(fileIdOrUrl: string, dataUrl: string): void {
   const cleanId = extractDriveFileId(fileIdOrUrl) || String(fileIdOrUrl || '').trim();
   if (cleanId && dataUrl) {
     photoCache.set(cleanId, dataUrl);
+    notifyPhotoCacheListeners();
   }
 }
 
@@ -642,31 +678,123 @@ export function invalidateDrivePhotoCache(fileIdOrUrl?: string): void {
   if (cleanId) {
     photoCache.delete(cleanId);
     inflightPhotoRequests.delete(cleanId);
+    notifyPhotoCacheListeners();
   }
 }
 
-export async function fetchDrivePhotoDataUrl(fileId: string): Promise<string | null> {
-  if (!fileId || !isGasConfigured()) return null;
-  const cached = photoCache.get(fileId);
+export async function fetchDrivePhotoDataUrl(fileId: string, retries = 2): Promise<string | null> {
+  const cleanId = extractDriveFileId(fileId) || String(fileId || '').trim();
+  if (!cleanId || !isGasConfigured()) return null;
+  const cached = photoCache.get(cleanId);
   if (cached) return cached;
 
-  const inflight = inflightPhotoRequests.get(fileId);
+  const inflight = inflightPhotoRequests.get(cleanId);
   if (inflight) return inflight;
 
-  const promise = gasGet<{ dataUrl: string }>('getPhoto', { fileId })
-    .then((res) => {
-      if (res.success && res.dataUrl) {
-        photoCache.set(fileId, res.dataUrl);
-        return res.dataUrl as string;
+  const promise = (async () => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await gasGet<{ dataUrl: string }>('getPhoto', { fileId: cleanId });
+        if (res.success && res.dataUrl) {
+          photoCache.set(cleanId, res.dataUrl);
+          notifyPhotoCacheListeners();
+          return res.dataUrl as string;
+        }
+      } catch {
+        // retry silently
       }
-      return null;
-    })
-    .catch(() => null)
-    .finally(() => {
-      inflightPhotoRequests.delete(fileId);
-    });
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+      }
+    }
+    return null;
+  })().finally(() => {
+    inflightPhotoRequests.delete(cleanId);
+  });
 
-  inflightPhotoRequests.set(fileId, promise);
+  inflightPhotoRequests.set(cleanId, promise);
+  return promise;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Gagal membaca blob gambar'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function fetchExternalImageAsDataUrl(url?: string): Promise<string | null> {
+  const cleanUrl = String(url || '').trim();
+  if (!cleanUrl) return null;
+  if (cleanUrl.startsWith('data:')) return cleanUrl;
+
+  const driveId = extractDriveFileId(cleanUrl);
+  if (driveId) {
+    return fetchDrivePhotoDataUrl(driveId);
+  }
+
+  const cached = externalImageCache.get(cleanUrl);
+  if (cached) return cached;
+
+  const inflight = inflightExternalRequests.get(cleanUrl);
+  if (inflight) return inflight;
+
+  const promise = (async (): Promise<string | null> => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7000);
+      const res = await fetch(cleanUrl, { mode: 'cors', credentials: 'omit', signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 0) {
+          const dataUrl = await blobToDataUrl(blob);
+          if (dataUrl.startsWith('data:')) {
+            externalImageCache.set(cleanUrl, dataUrl);
+            return dataUrl;
+          }
+        }
+      }
+    } catch {
+      // Fall back to canvas image load
+    }
+
+    return new Promise<string | null>((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      const timer = setTimeout(() => resolve(null), 6000);
+      img.onload = () => {
+        clearTimeout(timer);
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width || 150;
+          canvas.height = img.naturalHeight || img.height || 150;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(null);
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          const dataUrl = canvas.toDataURL('image/png');
+          externalImageCache.set(cleanUrl, dataUrl);
+          resolve(dataUrl);
+        } catch {
+          resolve(null);
+        }
+      };
+      img.onerror = () => {
+        clearTimeout(timer);
+        resolve(null);
+      };
+      img.src = cleanUrl;
+    });
+  })().finally(() => {
+    inflightExternalRequests.delete(cleanUrl);
+  });
+
+  inflightExternalRequests.set(cleanUrl, promise);
   return promise;
 }
 

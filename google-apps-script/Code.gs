@@ -102,7 +102,7 @@ var TEACHER_SESSION_ATT_HEADERS = [
 var STUDENT_LEVEL_SHEETS = {
   'SD/MI': 'Siswa_SD_MI',
   'SMP/MTS': 'Siswa_SMP_MTS',
-  'SMA/MA': 'Siswa_SMA_MA'
+  'SMK': 'Siswa_SMK'
 };
 
 var STUDENT_LEVEL_SHEET_HEADERS = [
@@ -120,8 +120,8 @@ function normalizeEducationLevel_(rawLevel) {
   if (up === 'SMP/MTS' || up === 'SMP' || up === 'MTS' || up.indexOf('SMP') === 0 || up.indexOf('MTS') === 0) {
     return 'SMP/MTS';
   }
-  if (up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up === 'SMK' || up.indexOf('SMA') === 0 || up.indexOf('SMK') === 0 || up.indexOf('MA') === 0) {
-    return 'SMA/MA';
+  if (up === 'SMK' || up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up.indexOf('SMK') === 0 || up.indexOf('SMA') === 0 || up.indexOf('MA') === 0) {
+    return 'SMK';
   }
   return '';
 }
@@ -134,15 +134,15 @@ function inferEducationLevel_(rawLevel, gradeStr, classNameStr) {
   if (!isNaN(gradeNum) && gradeNum >= 1 && gradeNum <= 12) {
     if (gradeNum <= 6) return 'SD/MI';
     if (gradeNum <= 9) return 'SMP/MTS';
-    return 'SMA/MA';
+    return 'SMK';
   }
 
   var clsUp = String(classNameStr || '').toUpperCase().trim();
   if (clsUp) {
-    if (/\b(SMA|SMK|MA)\b/.test(clsUp)) return 'SMA/MA';
+    if (/\b(SMK|SMA|MA)\b/.test(clsUp)) return 'SMK';
     if (/\b(SMP|MTS)\b/.test(clsUp)) return 'SMP/MTS';
     if (/\b(SD|MI)\b/.test(clsUp)) return 'SD/MI';
-    if (/\b(XII|XI|X)\b/.test(clsUp) || /(?:^|[\s\-_/])(12|11|10)(?![0-9])/.test(clsUp)) return 'SMA/MA';
+    if (/\b(XII|XI|X)\b/.test(clsUp) || /(?:^|[\s\-_/])(12|11|10)(?![0-9])/.test(clsUp)) return 'SMK';
     if (/\b(IX|VIII|VII)\b/.test(clsUp) || /(?:^|[\s\-_/])(9|8|7)(?![0-9])/.test(clsUp)) return 'SMP/MTS';
     if (/\b(VI|V|IV|III|II|I)\b/.test(clsUp) || /(?:^|[\s\-_/])(6|5|4|3|2|1)(?![0-9])/.test(clsUp)) return 'SD/MI';
   }
@@ -181,13 +181,13 @@ function resolveOrAutoCreateClassForStudent_(ss, rawClassId, rawClassName, rawLe
 
   if (clsNameStr) {
     var lookupKey = clsNameStr.toLowerCase().replace(/\s+/g, ' ');
-    var targetLevel = reqLevel || nameLevelHint || 'SMA/MA';
+    var targetLevel = reqLevel || nameLevelHint || 'SMK';
 
     // 1. Exact match by name + matching level
     for (var i = 0; i < existingClasses.length; i++) {
       var ex = existingClasses[i];
       var exKey = String(ex.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
-      var exLevel = inferEducationLevel_(ex.level, ex.grade, ex.name) || 'SMA/MA';
+      var exLevel = inferEducationLevel_(ex.level, ex.grade, ex.name) || 'SMK';
       if (exKey === lookupKey && exLevel === targetLevel) {
         return { classObj: ex, autoCreated: false };
       }
@@ -208,7 +208,7 @@ function resolveOrAutoCreateClassForStudent_(ss, rawClassId, rawClassName, rawLe
       var parts = nowWibParts_();
       var stRowsYear = readActiveRows_(ss, 'Settings');
       var activeYear = (stRowsYear.length > 0 && stRowsYear[0].academicYear) ? String(stRowsYear[0].academicYear) : '2026/2027';
-      var newClsLevel = nameLevelHint || reqLevel || 'SMA/MA';
+      var newClsLevel = nameLevelHint || reqLevel || 'SMK';
       if (reqLevel && !nameLevelHint) newClsLevel = reqLevel;
       var newClsGrade = inferGradeNumber_(newClsLevel, rawGrade, clsNameStr);
       var newClsObj = {
@@ -242,6 +242,11 @@ function resolveOrAutoCreateClassForStudent_(ss, rawClassId, rawClassName, rawLe
 }
 
 function ensureStudentLevelSheetsExist_(ss) {
+  // Seamless migration: rename legacy Siswa_SMA_MA tab to Siswa_SMK if needed
+  var legacySmaSheet = ss.getSheetByName('Siswa_SMA_MA');
+  if (legacySmaSheet && !ss.getSheetByName('Siswa_SMK')) {
+    legacySmaSheet.setName('Siswa_SMK');
+  }
   var levels = Object.keys(STUDENT_LEVEL_SHEETS);
   var anyNewlyCreated = false;
   for (var i = 0; i < levels.length; i++) {
@@ -273,7 +278,7 @@ function buildStudentLevelRow_(st, classById) {
   if (!lvl && cls) {
     lvl = inferEducationLevel_(cls.level, cls.grade, cls.name);
   }
-  if (!lvl) lvl = 'SMA/MA';
+  if (!lvl) lvl = 'SMK';
 
   return {
     level: lvl,
@@ -382,7 +387,7 @@ function syncStudentLevelSheets_(ss) {
   var grouped = {
     'SD/MI': [],
     'SMP/MTS': [],
-    'SMA/MA': []
+    'SMK': []
   };
 
   for (var i = 0; i < students.length; i++) {
@@ -1004,7 +1009,7 @@ function ensureAllSheets_(ss, forceFullCheck) {
   if (!forceFullCheck) {
     try {
       if (CacheService.getScriptCache().get(bootKey) === '1') {
-        if (ss.getSheetByName('Settings') && ss.getSheetByName('Students') && ss.getSheetByName('Siswa_SMA_MA')) {
+        if (ss.getSheetByName('Settings') && ss.getSheetByName('Students') && (ss.getSheetByName('Siswa_SMK') || ss.getSheetByName('Siswa_SMA_MA'))) {
           return;
         }
       }
@@ -1180,7 +1185,7 @@ function seedInitialSchoolData_(ss) {
   }
 
   var defaultClasses = [
-    { id: 'cls-10-a', name: 'X SMA A', grade: '10', academicYear: '2026/2027', level: 'SMA/MA', homeRoomTeacherId: 'tch-2', homeRoomTeacherName: 'Ust. Budi Santoso, S.Pd', status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
+    { id: 'cls-10-a', name: 'X SMK A', grade: '10', academicYear: '2026/2027', level: 'SMK', homeRoomTeacherId: 'tch-2', homeRoomTeacherName: 'Ust. Budi Santoso, S.Pd', status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
     { id: 'cls-7-a', name: 'VII SMP A', grade: '7', academicYear: '2026/2027', level: 'SMP/MTS', homeRoomTeacherId: 'tch-1', homeRoomTeacherName: 'Ahmad Fauzan, M.Kom', status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' }
   ];
   for (var c = 0; c < defaultClasses.length; c++) {
@@ -1188,8 +1193,8 @@ function seedInitialSchoolData_(ss) {
   }
 
   var defaultStudents = [
-    { id: 'std-1', nis: '2026001', nisn: '0091234501', name: 'Muhammad Rizki Pratama', gender: 'L', classId: 'cls-10-a', barcodeCard: 'CARD-2026001', parentPhone: '081234567890', photoFileId: '', photoUrl: '', level: 'SMA/MA', birthPlace: 'Jombang', birthDate: '12-08-2009', address: 'Diwek, Jombang', bloodType: 'O', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
-    { id: 'std-2', nis: '2026002', nisn: '0091234502', name: 'Aisyah Nurul Hidayah', gender: 'P', classId: 'cls-10-a', barcodeCard: 'CARD-2026002', parentPhone: '081234567891', photoFileId: '', photoUrl: '', level: 'SMA/MA', birthPlace: 'Jombang', birthDate: '04-03-2010', address: 'Peterongan, Jombang', bloodType: 'A', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
+    { id: 'std-1', nis: '2026001', nisn: '0091234501', name: 'Muhammad Rizki Pratama', gender: 'L', classId: 'cls-10-a', barcodeCard: 'CARD-2026001', parentPhone: '081234567890', photoFileId: '', photoUrl: '', level: 'SMK', birthPlace: 'Jombang', birthDate: '12-08-2009', address: 'Diwek, Jombang', bloodType: 'O', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
+    { id: 'std-2', nis: '2026002', nisn: '0091234502', name: 'Aisyah Nurul Hidayah', gender: 'P', classId: 'cls-10-a', barcodeCard: 'CARD-2026002', parentPhone: '081234567891', photoFileId: '', photoUrl: '', level: 'SMK', birthPlace: 'Jombang', birthDate: '04-03-2010', address: 'Peterongan, Jombang', bloodType: 'A', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
     { id: 'std-3', nis: '2026003', nisn: '0091234503', name: 'Zainal Abidin', gender: 'L', classId: 'cls-7-a', barcodeCard: 'CARD-2026003', parentPhone: '081234567892', photoFileId: '', photoUrl: '', level: 'SMP/MTS', birthPlace: 'Mojokerto', birthDate: '19-11-2012', address: 'Mojoagung, Jombang', bloodType: 'B', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' }
   ];
   for (var s = 0; s < defaultStudents.length; s++) {
@@ -3497,7 +3502,7 @@ function handleCreateGeneric_(ss, entity, data, actor) {
   }
 
   if (entity === 'Classes') {
-    obj.level = inferEducationLevel_(data.level, data.grade, data.name) || 'SMA/MA';
+    obj.level = inferEducationLevel_(data.level, data.grade, data.name) || 'SMK';
     if (!obj.academicYear) {
       var stRowsYear = readActiveRows_(ss, 'Settings');
       obj.academicYear = (stRowsYear.length > 0 && stRowsYear[0].academicYear) ? String(stRowsYear[0].academicYear) : '2026/2027';
@@ -4102,7 +4107,7 @@ function handleBulkImportStudents_(ss, rows, defaultClassId, defaultLevel, actor
       if (classByNameKey[lookupKey]) {
         resolvedClass = classByNameKey[lookupKey];
       } else if (classesSheet) {
-        var newClsLevel = rowInferredLevel || fallbackLevel || 'SMA/MA';
+        var newClsLevel = rowInferredLevel || fallbackLevel || 'SMK';
         var newClsGrade = inferGradeNumber_(newClsLevel, rawGrade, rawClassName);
         var newClsObj = {
           id: generateId_('cls') + r,
@@ -4137,7 +4142,7 @@ function handleBulkImportStudents_(ss, rows, defaultClassId, defaultLevel, actor
         normalizeEducationLevel_(rawRowLevel) ||
         (resolvedClass ? inferEducationLevel_(resolvedClass.level, resolvedClass.grade, resolvedClass.name) : '') ||
         fallbackLevel ||
-        'SMA/MA'
+        'SMK'
       );
 
     pendingStudentObjs.push({

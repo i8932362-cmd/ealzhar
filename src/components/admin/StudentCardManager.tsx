@@ -32,11 +32,16 @@ import {
   StudentCardFront,
   StudentCardBack,
   DEFAULT_LEVEL_CONFIGS,
+  ResolvedCardAssetOverrides,
+  getStudentInitialAvatarDataUrl,
+  getFallbackQrSvgDataUrl,
 } from './StudentCardTemplate.tsx';
 import {
   uploadImageAssetToDrive,
   deleteImageAssetFromDrive,
   extractDriveFileId,
+  fetchDrivePhotoDataUrl,
+  fetchExternalImageAsDataUrl,
 } from '../../lib/api.ts';
 import { emitActionToast } from '../../lib/toast.ts';
 import { DriveImage, preloadDriveImageUrls } from '../common/DriveImage.tsx';
@@ -46,6 +51,7 @@ interface StudentCardManagerProps {
   classes: SchoolClass[];
   schoolName: string;
   schoolAddress?: string;
+  schoolLogo?: string;
   foundationWebsite?: string;
   watermarkUrl?: string;
   faceTemplates?: FaceTemplate[];
@@ -54,7 +60,7 @@ interface StudentCardManagerProps {
   initialLevelConfigsJson?: string;
 }
 
-function parseLevelConfigsSafely(raw?: string): Partial<Record<EducationLevel, Partial<LevelConfig>>> | null {
+function parseLevelConfigsSafely(raw?: string): Record<string, Partial<LevelConfig>> | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!trimmed || !trimmed.startsWith('{') || !trimmed.endsWith('}')) {
@@ -65,22 +71,44 @@ function parseLevelConfigsSafely(raw?: string): Partial<Record<EducationLevel, P
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return null;
     }
-    return parsed as Partial<Record<EducationLevel, Partial<LevelConfig>>>;
+    return parsed as Record<string, Partial<LevelConfig>>;
   } catch {
     return null;
   }
 }
 
 function mergeWithDefaultLevelConfigs(
-  parsed?: Partial<Record<EducationLevel, Partial<LevelConfig>>> | null
+  parsed?: Record<string, Partial<LevelConfig>> | null
 ): Record<EducationLevel, LevelConfig> {
   const result: Record<EducationLevel, LevelConfig> = {
-    'SMA/MA': { ...DEFAULT_LEVEL_CONFIGS['SMA/MA'] },
+    SMK: { ...DEFAULT_LEVEL_CONFIGS['SMK'] },
     'SMP/MTS': { ...DEFAULT_LEVEL_CONFIGS['SMP/MTS'] },
     'SD/MI': { ...DEFAULT_LEVEL_CONFIGS['SD/MI'] },
   };
   if (!parsed) return result;
-  (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
+
+  // Backward-compatible migration: preserve uploaded logo, signature, stamp, watermark & text from legacy SMA/MA key
+  const legacySmaMa = parsed['SMA/MA'];
+  const currentSmk = parsed['SMK'];
+  if ((legacySmaMa && typeof legacySmaMa === 'object') || (currentSmk && typeof currentSmk === 'object')) {
+    const mergedSmk: LevelConfig = {
+      ...result['SMK'],
+      ...(legacySmaMa && typeof legacySmaMa === 'object' ? legacySmaMa : {}),
+      ...(currentSmk && typeof currentSmk === 'object' ? currentSmk : {}),
+      level: 'SMK',
+    };
+    const rawUnit = String(mergedSmk.unitName || '').trim().toUpperCase();
+    if (!rawUnit || rawUnit === 'SMA / MA MAMBAUL ULUM' || rawUnit === 'SMA/MA' || rawUnit === 'SMA/MA MAMBAUL ULUM') {
+      mergedSmk.unitName = DEFAULT_LEVEL_CONFIGS['SMK'].unitName;
+    }
+    const rawBadge = String(mergedSmk.badgeText || '').trim().toUpperCase();
+    if (!rawBadge || rawBadge === 'JENJANG MENENGAH ATAS') {
+      mergedSmk.badgeText = DEFAULT_LEVEL_CONFIGS['SMK'].badgeText;
+    }
+    result['SMK'] = mergedSmk;
+  }
+
+  (['SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
     if (parsed[lvl] && typeof parsed[lvl] === 'object') {
       result[lvl] = {
         ...result[lvl],
@@ -92,11 +120,150 @@ function mergeWithDefaultLevelConfigs(
   return result;
 }
 
+interface ExportRenderTarget {
+  student: Student;
+  schoolClass?: SchoolClass;
+  config: LevelConfig;
+  hasFace: boolean;
+  assets: ResolvedCardAssetOverrides;
+}
+
+function waitNextAnimationFrames(count = 2): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (remaining: number) => {
+      if (remaining <= 0) {
+        resolve();
+        return;
+      }
+      requestAnimationFrame(() => step(remaining - 1));
+    };
+    step(count);
+  });
+}
+
+async function waitForImagesInsideElement(container: HTMLElement): Promise<void> {
+  const imgs = Array.from(container.querySelectorAll('img'));
+  await Promise.all(
+    imgs.map(async (img) => {
+      if (!img.getAttribute('src')) return;
+      if (!img.complete || img.naturalWidth === 0) {
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            img.removeEventListener('load', finish);
+            img.removeEventListener('error', finish);
+            resolve();
+          };
+          img.addEventListener('load', finish);
+          img.addEventListener('error', finish);
+          setTimeout(finish, 4000);
+        });
+      }
+      if (typeof img.decode === 'function') {
+        try {
+          await img.decode();
+        } catch {
+          // Ignore SVG/data decode edge cases when already loaded
+        }
+      }
+    })
+  );
+}
+
+function loadHtmlImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Gagal memuat gambar kartu untuk digabung.'));
+    img.src = src;
+  });
+}
+
+async function composeFrontBackCardJpeg(
+  frontDataUrl: string,
+  backDataUrl: string,
+  student: Student,
+  classNameStr: string,
+  levelLabel: string
+): Promise<string> {
+  const [frontImg, backImg] = await Promise.all([
+    loadHtmlImage(frontDataUrl),
+    loadHtmlImage(backDataUrl),
+  ]);
+
+  const cardW = 1062;
+  const cardH = 680;
+  const padX = 56;
+  const headerH = 92;
+  const gapX = 56;
+  const footerH = 44;
+  const totalW = padX * 2 + cardW * 2 + gapX;
+  const totalH = headerH + cardH + footerH + 24;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = totalW;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return frontDataUrl;
+
+  // Clean white printable sheet background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  // Header metadata line
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '700 28px Inter, Arial, sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`KARTU PELAJAR — ${student.name.toUpperCase()} (${levelLabel})`, padX, 46);
+
+  ctx.fillStyle = '#475569';
+  ctx.font = '600 22px monospace';
+  const rightMeta = `NISN: ${student.nisn || student.nis}  •  Kelas: ${classNameStr || 'Reguler'}`;
+  const metaWidth = ctx.measureText(rightMeta).width;
+  ctx.fillText(rightMeta, totalW - padX - metaWidth, 46);
+
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(padX, headerH - 14);
+  ctx.lineTo(totalW - padX, headerH - 14);
+  ctx.stroke();
+
+  // Front card (Left) & Back card (Right)
+  ctx.drawImage(frontImg, padX, headerH, cardW, cardH);
+  ctx.drawImage(backImg, padX + cardW + gapX, headerH, cardW, cardH);
+
+  // Center fold/cut dashed guide
+  const centerX = padX + cardW + gapX / 2;
+  ctx.save();
+  ctx.strokeStyle = '#94a3b8';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 8]);
+  ctx.beginPath();
+  ctx.moveTo(centerX, headerH);
+  ctx.lineTo(centerX, headerH + cardH);
+  ctx.stroke();
+  ctx.restore();
+
+  // Subtle side captions
+  ctx.fillStyle = '#64748b';
+  ctx.font = '700 18px Inter, Arial, sans-serif';
+  const lblFront = 'SISI DEPAN';
+  const lblBack = 'SISI BELAKANG';
+  ctx.fillText(lblFront, padX + cardW / 2 - ctx.measureText(lblFront).width / 2, headerH + cardH + 28);
+  ctx.fillText(lblBack, padX + cardW + gapX + cardW / 2 - ctx.measureText(lblBack).width / 2, headerH + cardH + 28);
+
+  return canvas.toDataURL('image/jpeg', 0.96);
+}
+
 export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   students,
   classes,
   schoolName,
   schoolAddress,
+  schoolLogo,
   foundationWebsite,
   watermarkUrl,
   faceTemplates = [],
@@ -122,7 +289,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   );
 
   const [showConfigModal, setShowConfigModal] = useState<boolean>(false);
-  const [activeConfigTab, setActiveConfigTab] = useState<EducationLevel>('SMA/MA');
+  const [activeConfigTab, setActiveConfigTab] = useState<EducationLevel>('SMK');
   const [isSavingConfig, setIsSavingConfig] = useState<boolean>(false);
   const [uploadingField, setUploadingField] = useState<
     'principalSignatureUrl' | 'stampUrl' | 'logoUrl' | 'qrCodeUrl' | 'watermarkUrl' | null
@@ -133,7 +300,9 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const isDirtyRef = useRef<boolean>(false);
 
-  // Batch download progress
+  // Export states (dedicated offscreen stage ensures both sides & all Drive assets always render before capture)
+  const [exportRenderTarget, setExportRenderTarget] = useState<ExportRenderTarget | null>(null);
+  const [exportingStudentKey, setExportingStudentKey] = useState<string | null>(null);
   const [isExportingBatch, setIsExportingBatch] = useState<boolean>(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; studentName: string } | null>(null);
   const [downloadSuccessMessage, setDownloadSuccessMessage] = useState<string | null>(null);
@@ -147,6 +316,16 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       setLevelConfigs(mergeWithDefaultLevelConfigs(parsed));
     }
   }, [initialLevelConfigsJson, showConfigModal]);
+
+  // Preload shared Drive assets (logo, TTD, stamp, watermark, QR) for crisp preview & fast downloads
+  useEffect(() => {
+    const urls: Array<string | undefined> = [schoolLogo, watermarkUrl];
+    (['SMK', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
+      const c = levelConfigs[lvl];
+      if (c) urls.push(c.logoUrl, c.principalSignatureUrl, c.stampUrl, c.watermarkUrl, c.qrCodeUrl);
+    });
+    void preloadDriveImageUrls(urls);
+  }, [levelConfigs, schoolLogo, watermarkUrl]);
 
   const updateLevelConfigs = (
     updater:
@@ -164,25 +343,25 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     if (!up) return null;
     if (up === 'SD/MI' || up === 'SD' || up === 'MI' || up.startsWith('SD') || up.startsWith('MI')) return 'SD/MI';
     if (up === 'SMP/MTS' || up === 'SMP' || up === 'MTS' || up.startsWith('SMP') || up.startsWith('MTS')) return 'SMP/MTS';
-    if (up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up === 'SMK' || up.startsWith('SMA') || up.startsWith('SMK') || up.startsWith('MA')) return 'SMA/MA';
+    if (up === 'SMK' || up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up.startsWith('SMK') || up.startsWith('SMA') || up.startsWith('MA')) return 'SMK';
     return null;
   };
 
   const getClassLevel = (cls?: SchoolClass): EducationLevel => {
-    if (!cls) return 'SMA/MA';
+    if (!cls) return 'SMK';
     const explicit = normalizeLevelValue(cls.level);
     if (explicit) return explicit;
     const gradeNum = Number(String(cls.grade || '').replace(/[^0-9]/g, ''));
     if (!Number.isNaN(gradeNum) && gradeNum >= 1 && gradeNum <= 12) {
       if (gradeNum <= 6) return 'SD/MI';
       if (gradeNum <= 9) return 'SMP/MTS';
-      return 'SMA/MA';
+      return 'SMK';
     }
     const name = (cls.name || '').toUpperCase().trim();
-    if (/\b(SMA|SMK|MA|XII|XI|X|12|11|10)\b/.test(name)) return 'SMA/MA';
+    if (/\b(SMK|SMA|MA|XII|XI|X|12|11|10)\b/.test(name)) return 'SMK';
     if (/\b(SMP|MTS|IX|VIII|VII|9|8|7)\b/.test(name)) return 'SMP/MTS';
     if (/\b(SD|MI|VI|V|IV|III|II|I|6|5|4|3|2|1)\b/.test(name)) return 'SD/MI';
-    return 'SMA/MA';
+    return 'SMK';
   };
 
   const getStudentLevel = (student: Student): EducationLevel => {
@@ -195,19 +374,19 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const activeStudents = students.filter(s => s.isActive);
   const levelCounts: Record<'ALL' | EducationLevel, number> = {
     ALL: activeStudents.length,
-    'SMA/MA': activeStudents.filter(s => getStudentLevel(s) === 'SMA/MA').length,
+    SMK: activeStudents.filter(s => getStudentLevel(s) === 'SMK').length,
     'SMP/MTS': activeStudents.filter(s => getStudentLevel(s) === 'SMP/MTS').length,
     'SD/MI': activeStudents.filter(s => getStudentLevel(s) === 'SD/MI').length,
   };
 
   const hasManualLevelRef = useRef<boolean>(false);
-  const activeLevelsPresent = (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).filter(
+  const activeLevelsPresent = (['SMK', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).filter(
     lvl => levelCounts[lvl] > 0
   );
   const dominantLevel: EducationLevel =
-    (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).reduce((best, cur) =>
+    (['SMK', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).reduce((best, cur) =>
       levelCounts[cur] > levelCounts[best] ? cur : best
-    , 'SMA/MA');
+    , 'SMK');
 
   useEffect(() => {
     if (hasManualLevelRef.current || activeStudents.length === 0) return;
@@ -218,7 +397,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       setSelectedLevel('ALL');
       setActiveConfigTab(dominantLevel);
     }
-  }, [activeStudents.length, levelCounts['SMA/MA'], levelCounts['SMP/MTS'], levelCounts['SD/MI']]);
+  }, [activeStudents.length, levelCounts['SMK'], levelCounts['SMP/MTS'], levelCounts['SD/MI']]);
 
   // Filter students
   const filteredStudents = activeStudents.filter(std => {
@@ -426,38 +605,122 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     }
   };
 
-  // 1. Download Single Card JPG (Front, Back)
-  const downloadSingleCardJpg = async (student: Student, side: 'front' | 'back') => {
+  // Resolve any asset reference (gas-photo://, Drive URL, HTTPS URL, data:) to inlined Data URL for export
+  const resolveAssetToDataUrl = async (raw?: string): Promise<string> => {
+    const clean = String(raw || '').trim();
+    if (!clean) return '';
+    if (clean.startsWith('data:')) return clean;
+    const driveId = extractDriveFileId(clean);
+    if (driveId) {
+      return (await fetchDrivePhotoDataUrl(driveId, 2)) || '';
+    }
+    return (await fetchExternalImageAsDataUrl(clean)) || '';
+  };
+
+  const resolveLevelAssetsForExport = async (
+    config: LevelConfig
+  ): Promise<Omit<ResolvedCardAssetOverrides, 'studentPhoto'>> => {
+    const effectiveLogoRaw = config.logoUrl || schoolLogo;
+    const effectiveWatermarkRaw = config.watermarkUrl || watermarkUrl;
+    const targetWebsite = config.websiteUrl || foundationWebsite || 'https://mambaululum.sch.id';
+    const remoteQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(targetWebsite)}&bgcolor=ffffff&color=1e3a8a`;
+
+    const [logo, signature, stamp, watermark, qrResolved] = await Promise.all([
+      resolveAssetToDataUrl(effectiveLogoRaw),
+      resolveAssetToDataUrl(config.principalSignatureUrl),
+      resolveAssetToDataUrl(config.stampUrl),
+      resolveAssetToDataUrl(effectiveWatermarkRaw),
+      config.qrCodeUrl
+        ? resolveAssetToDataUrl(config.qrCodeUrl)
+        : fetchExternalImageAsDataUrl(remoteQrUrl).then((d) => d || getFallbackQrSvgDataUrl(targetWebsite)),
+    ]);
+
+    return {
+      logo,
+      signature,
+      stamp,
+      watermark,
+      qr: qrResolved || getFallbackQrSvgDataUrl(targetWebsite),
+    };
+  };
+
+  const resolveStudentPhotoForExport = async (student: Student): Promise<string> => {
+    const fallbackAvatar = getStudentInitialAvatarDataUrl(student.name, student.gender);
+    const driveId = extractDriveFileId(student.photoUrl) || student.photoFileId;
+    if (driveId) {
+      const d = await fetchDrivePhotoDataUrl(driveId, 2);
+      if (d) return d;
+    }
+    if (student.photoUrl && student.photoUrl.trim().length > 10) {
+      const ext = await resolveAssetToDataUrl(student.photoUrl);
+      if (ext) return ext;
+    }
+    return fallbackAvatar;
+  };
+
+  const captureExportCardSide = async (
+    student: Student,
+    side: 'front' | 'back'
+  ): Promise<string> => {
+    await waitNextAnimationFrames(2);
+    const elemId = `export-card-${side}-${student.id}`;
+    const elem = document.getElementById(elemId);
+    if (!elem) {
+      throw new Error(`Komponen kartu ${side === 'front' ? 'depan' : 'belakang'} belum siap dirender.`);
+    }
+    await waitForImagesInsideElement(elem);
+    return toJpeg(elem, {
+      quality: 0.96,
+      pixelRatio: 2.5, // 300 DPI high resolution
+      skipFonts: true,
+      cacheBust: false,
+      backgroundColor: '#ffffff',
+    });
+  };
+
+  // 1. Download Single Card JPG (Front, Back, or Combined Front+Back)
+  const downloadSingleCardJpg = async (student: Student, side: 'front' | 'back' | 'both') => {
+    if (isExportingBatch || exportingStudentKey) return;
     setCardError(null);
+    setExportingStudentKey(`${student.id}-${side}`);
     try {
-      const lvl = getStudentLevel(student);
-      const cfg = levelConfigs[lvl] || DEFAULT_LEVEL_CONFIGS[lvl];
-      await preloadDriveImageUrls([
-        student.photoUrl,
-        student.photoFileId ? `gas-photo://${student.photoFileId}` : undefined,
-        cfg.logoUrl,
-        cfg.principalSignatureUrl,
-        cfg.stampUrl,
-        cfg.watermarkUrl,
-        cfg.qrCodeUrl,
-        watermarkUrl,
+      const stdLevel = getStudentLevel(student);
+      const cls = classes.find(c => c.id === student.classId);
+      const cfg = levelConfigs[stdLevel] || DEFAULT_LEVEL_CONFIGS[stdLevel] || DEFAULT_LEVEL_CONFIGS['SMK'];
+
+      const [sharedAssets, studentPhoto] = await Promise.all([
+        resolveLevelAssetsForExport(cfg),
+        resolveStudentPhotoForExport(student),
       ]);
 
-      const elemId = side === 'front' ? `card-front-${student.id}` : `card-back-${student.id}`;
-      const elem = document.getElementById(elemId);
-      if (!elem) {
-        setCardError('Komponen kartu belum siap dirender.');
-        return;
-      }
-
-      const dataUrl = await toJpeg(elem, {
-        quality: 0.96,
-        pixelRatio: 2.5, // 300 DPI high resolution
-        cacheBust: true,
+      setExportRenderTarget({
+        student,
+        schoolClass: cls,
+        config: cfg,
+        hasFace: enrolledStudentIds.has(student.id),
+        assets: { ...sharedAssets, studentPhoto },
       });
 
       const safeName = student.name.replace(/[^a-zA-Z0-9]/g, '_');
-      const filename = `KARTU_${side.toUpperCase()}_${student.nisn || student.nis}_${safeName}.jpg`;
+      const nisnCode = student.nisn || student.nis;
+      let dataUrl = '';
+      let filename = '';
+
+      if (side === 'both') {
+        const frontDataUrl = await captureExportCardSide(student, 'front');
+        const backDataUrl = await captureExportCardSide(student, 'back');
+        dataUrl = await composeFrontBackCardJpeg(
+          frontDataUrl,
+          backDataUrl,
+          student,
+          cls?.name || 'Reguler',
+          stdLevel
+        );
+        filename = `KARTU_DEPAN_BELAKANG_${nisnCode}_${safeName}.jpg`;
+      } else {
+        dataUrl = await captureExportCardSide(student, side);
+        filename = `KARTU_${side.toUpperCase()}_${nisnCode}_${safeName}.jpg`;
+      }
 
       const link = document.createElement('a');
       link.download = filename;
@@ -466,11 +729,15 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     } catch (err: any) {
       console.error('Download card error:', err);
       setCardError('Gagal mengunduh kartu: ' + (err?.message || 'Kesalahan tidak diketahui'));
+    } finally {
+      setExportRenderTarget(null);
+      setExportingStudentKey(null);
     }
   };
 
-  // 2. Download Massal Semua Kartu dalam format .ZIP (Sisi Depan & Belakang dalam JPG)
+  // 2. Download Massal Semua Kartu dalam format .ZIP (Sisi Depan, Belakang & Gabungan Depan-Belakang Rapi)
   const downloadBatchZip = async () => {
+    if (isExportingBatch || exportingStudentKey) return;
     setCardError(null);
     if (filteredStudents.length === 0) {
       setCardError('Tidak ada siswa yang dipilih.');
@@ -480,62 +747,104 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     setIsExportingBatch(true);
     setDownloadSuccessMessage(null);
     const zip = new JSZip();
-    const folder = zip.folder(`Kartu_Pelajar_${selectedLevel !== 'ALL' ? selectedLevel.replace('/', '_') : 'Semua'}`);
+    const levelSlug = selectedLevel !== 'ALL' ? selectedLevel.replace('/', '_') : 'Semua';
+    const rootFolder = zip.folder(`Kartu_Pelajar_${levelSlug}`);
+    const frontFolder = rootFolder?.folder('01_Sisi_Depan');
+    const backFolder = rootFolder?.folder('02_Sisi_Belakang');
+    const combinedFolder = rootFolder?.folder('03_Gabungan_Depan_Belakang');
 
     try {
-      const sharedUrls: Array<string | undefined> = [watermarkUrl];
-      (['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).forEach((lvl) => {
-        const c = levelConfigs[lvl];
-        if (c) sharedUrls.push(c.logoUrl, c.principalSignatureUrl, c.stampUrl, c.watermarkUrl, c.qrCodeUrl);
-      });
-      await preloadDriveImageUrls([
-        ...sharedUrls,
-        ...filteredStudents.map((s) => s.photoUrl),
-        ...filteredStudents.map((s) => (s.photoFileId ? `gas-photo://${s.photoFileId}` : undefined)),
-      ]);
+      // Pre-resolve shared level assets ONCE per jenjang so Logo, TTD, Stempel, Watermark & QR never disappear
+      const levelAssetMap: Partial<Record<EducationLevel, Omit<ResolvedCardAssetOverrides, 'studentPhoto'>>> = {};
+      const activeLevelsToExport = Array.from(new Set(filteredStudents.map((s) => getStudentLevel(s))));
+      await Promise.all(
+        activeLevelsToExport.map(async (lvl) => {
+          const cfg = levelConfigs[lvl] || DEFAULT_LEVEL_CONFIGS[lvl] || DEFAULT_LEVEL_CONFIGS['SMK'];
+          levelAssetMap[lvl] = await resolveLevelAssetsForExport(cfg);
+        })
+      );
 
-      for (let i = 0; i < filteredStudents.length; i++) {
-        const student = filteredStudents[i];
+      // Sort students cleanly by Class Name then Student Name for tidy ZIP file ordering
+      const sortedStudents = [...filteredStudents].sort((a, b) => {
+        const clsA = classes.find(c => c.id === a.classId)?.name || '';
+        const clsB = classes.find(c => c.id === b.classId)?.name || '';
+        const clsCmp = clsA.localeCompare(clsB, 'id', { numeric: true });
+        if (clsCmp !== 0) return clsCmp;
+        return a.name.localeCompare(b.name, 'id');
+      });
+
+      const usedFileKeys = new Set<string>();
+      let exportedCount = 0;
+
+      for (let i = 0; i < sortedStudents.length; i++) {
+        const student = sortedStudents[i];
         setBatchProgress({
           current: i + 1,
-          total: filteredStudents.length,
+          total: sortedStudents.length,
           studentName: student.name,
         });
 
-        const frontElem = document.getElementById(`card-front-${student.id}`);
-        const backElem = document.getElementById(`card-back-${student.id}`);
+        const stdLevel = getStudentLevel(student);
+        const cls = classes.find(c => c.id === student.classId);
+        const cfg = levelConfigs[stdLevel] || DEFAULT_LEVEL_CONFIGS[stdLevel] || DEFAULT_LEVEL_CONFIGS['SMK'];
+        const sharedAssets = levelAssetMap[stdLevel] || (await resolveLevelAssetsForExport(cfg));
+        const studentPhoto = await resolveStudentPhotoForExport(student);
 
-        const safeName = student.name.replace(/[^a-zA-Z0-9]/g, '_');
-        const nisnCode = student.nisn || student.nis;
+        setExportRenderTarget({
+          student,
+          schoolClass: cls,
+          config: cfg,
+          hasFace: enrolledStudentIds.has(student.id),
+          assets: { ...sharedAssets, studentPhoto },
+        });
 
-        if (frontElem) {
-          const frontDataUrl = await toJpeg(frontElem, { quality: 0.95, pixelRatio: 2.5 });
-          const base64Data = frontDataUrl.replace(/^data:image\/jpeg;base64,/, '');
-          folder?.file(`DEPAN_${nisnCode}_${safeName}.jpg`, base64Data, { base64: true });
+        const frontDataUrl = await captureExportCardSide(student, 'front');
+        const backDataUrl = await captureExportCardSide(student, 'back');
+        const combinedDataUrl = await composeFrontBackCardJpeg(
+          frontDataUrl,
+          backDataUrl,
+          student,
+          cls?.name || 'Reguler',
+          stdLevel
+        );
+
+        const safeClass = (cls?.name || 'Umum').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const safeName = student.name.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const nisnCode = String(student.nisn || student.nis || i + 1).replace(/[^a-zA-Z0-9_-]/g, '');
+        const indexPrefix = String(i + 1).padStart(3, '0');
+        let fileStem = `${indexPrefix}_${safeClass}_${nisnCode}_${safeName}`;
+        if (usedFileKeys.has(fileStem)) {
+          fileStem = `${fileStem}_${student.id.slice(-4)}`;
         }
+        usedFileKeys.add(fileStem);
 
-        if (backElem) {
-          const backDataUrl = await toJpeg(backElem, { quality: 0.95, pixelRatio: 2.5 });
-          const base64Data = backDataUrl.replace(/^data:image\/jpeg;base64,/, '');
-          folder?.file(`BELAKANG_${nisnCode}_${safeName}.jpg`, base64Data, { base64: true });
-        }
+        frontFolder?.file(`${fileStem}_DEPAN.jpg`, frontDataUrl.replace(/^data:image\/jpeg;base64,/, ''), { base64: true });
+        backFolder?.file(`${fileStem}_BELAKANG.jpg`, backDataUrl.replace(/^data:image\/jpeg;base64,/, ''), { base64: true });
+        combinedFolder?.file(`${fileStem}_DEPAN_BELAKANG.jpg`, combinedDataUrl.replace(/^data:image\/jpeg;base64,/, ''), { base64: true });
+        exportedCount++;
+
+        // Yield briefly to keep UI responsive & allow GC between cards
+        await new Promise((r) => setTimeout(r, 8));
       }
 
       const content = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(content);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `Kartu_Pelajar_Yayasan_Mambaul_Ulum_${Date.now()}.zip`;
+      link.download = `Kartu_Pelajar_${levelSlug}_${new Date().toISOString().slice(0, 10)}.zip`;
       link.click();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-      setDownloadSuccessMessage(
-        `Berhasil mengunduh ${filteredStudents.length} pasang kartu pelajar dalam format ZIP!`
-      );
+      const okMsg = `Berhasil mengunduh ${exportedCount} pasang kartu pelajar (Depan, Belakang & Gabungan Depan-Belakang) dalam format ZIP!`;
+      setDownloadSuccessMessage(okMsg);
+      emitActionToast({ type: 'saved', title: 'Unduhan Selesai', message: okMsg });
     } catch (err: any) {
       console.error('Batch export failed:', err);
-      setCardError('Gagal mengekspor massal: ' + (err?.message || 'Kesalahan tidak diketahui'));
+      const errMsg = 'Gagal mengekspor massal: ' + (err?.message || 'Kesalahan tidak diketahui');
+      setCardError(errMsg);
+      emitActionToast({ type: 'error', title: 'Gagal Ekspor', message: errMsg });
     } finally {
+      setExportRenderTarget(null);
       setIsExportingBatch(false);
       setBatchProgress(null);
     }
@@ -543,13 +852,56 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Offscreen Print/Export Stage — renders BOTH sides synchronously with resolved data URLs regardless of preview filter */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          left: '-12000px',
+          top: 0,
+          width: '920px',
+          opacity: 1,
+          pointerEvents: 'none',
+          zIndex: -1,
+        }}
+      >
+        {exportRenderTarget && (
+          <div className="flex items-start gap-6 bg-white p-2">
+            <StudentCardFront
+              cardIdPrefix="export-"
+              student={exportRenderTarget.student}
+              schoolClass={exportRenderTarget.schoolClass}
+              schoolName={schoolName}
+              schoolAddress={schoolAddress}
+              schoolLogo={schoolLogo}
+              watermarkUrl={watermarkUrl}
+              hasFaceEnrolled={exportRenderTarget.hasFace}
+              config={exportRenderTarget.config}
+              resolvedAssetOverrides={exportRenderTarget.assets}
+            />
+            <StudentCardBack
+              cardIdPrefix="export-"
+              student={exportRenderTarget.student}
+              schoolClass={exportRenderTarget.schoolClass}
+              schoolName={schoolName}
+              schoolAddress={schoolAddress}
+              schoolLogo={schoolLogo}
+              foundationWebsite={foundationWebsite}
+              watermarkUrl={watermarkUrl}
+              config={exportRenderTarget.config}
+              resolvedAssetOverrides={exportRenderTarget.assets}
+            />
+          </div>
+        )}
+      </div>
+
       {/* Top Banner & Action Controls */}
       <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-5">
           <div className="space-y-1">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Multi-Jenjang: SMA/MA • SMP/MTS • SD/MI</span>
+              <span>Multi-Jenjang: SMK • SMP/MTS • SD/MI</span>
             </div>
             <h3 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">
               Pusat Cetak & Unduh Kartu Pelajar (Format JPG 300 DPI)
@@ -613,7 +965,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
               <span>Jenjang Otomatis / Filter:</span>
             </label>
             <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
-              {(['ALL', 'SMA/MA', 'SMP/MTS', 'SD/MI'] as const).map(lvl => (
+              {(['ALL', 'SMK', 'SMP/MTS', 'SD/MI'] as const).map(lvl => (
                 <button
                   key={lvl}
                   onClick={() => {
@@ -815,7 +1167,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             {filteredStudents.map(student => {
               const cls = classes.find(c => c.id === student.classId);
               const stdLevel = getStudentLevel(student);
-              const config = levelConfigs[stdLevel] || DEFAULT_LEVEL_CONFIGS['SMA/MA'];
+              const config = levelConfigs[stdLevel] || DEFAULT_LEVEL_CONFIGS['SMK'];
               const hasFace = enrolledStudentIds.has(student.id);
 
               return (
@@ -824,7 +1176,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                   className="p-5 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 print:break-inside-avoid print:shadow-none print:border-none"
                 >
                   {/* Card Title & Download Action Bar */}
-                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 flex items-center justify-center font-bold text-xs">
                         {stdLevel.split('/')[0]}
@@ -851,23 +1203,47 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                     </div>
 
                     {/* Single Student JPG Download Buttons */}
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         onClick={() => downloadSingleCardJpg(student, 'front')}
-                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:text-blue-300 transition flex items-center gap-1"
+                        disabled={isExportingBatch || Boolean(exportingStudentKey)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:text-blue-300 disabled:opacity-50 transition flex items-center gap-1"
                         title="Unduh Bagian Depan Kartu (JPG)"
                       >
-                        <Download className="w-3.5 h-3.5" />
+                        {exportingStudentKey === `${student.id}-front` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
                         <span>JPG Depan</span>
                       </button>
 
                       <button
                         onClick={() => downloadSingleCardJpg(student, 'back')}
-                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 transition flex items-center gap-1"
+                        disabled={isExportingBatch || Boolean(exportingStudentKey)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 disabled:opacity-50 transition flex items-center gap-1"
                         title="Unduh Bagian Belakang Kartu (JPG)"
                       >
-                        <Download className="w-3.5 h-3.5" />
+                        {exportingStudentKey === `${student.id}-back` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
                         <span>JPG Belakang</span>
+                      </button>
+
+                      <button
+                        onClick={() => downloadSingleCardJpg(student, 'both')}
+                        disabled={isExportingBatch || Boolean(exportingStudentKey)}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-300 disabled:opacity-50 transition flex items-center gap-1"
+                        title="Unduh Gabungan Depan & Belakang Siap Cetak (JPG)"
+                      >
+                        {exportingStudentKey === `${student.id}-both` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
+                        <span>Depan+Belakang</span>
                       </button>
                     </div>
                   </div>
@@ -881,6 +1257,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                           schoolClass={cls}
                           schoolName={schoolName}
                           schoolAddress={schoolAddress}
+                          schoolLogo={schoolLogo}
                           watermarkUrl={watermarkUrl}
                           hasFaceEnrolled={hasFace}
                           config={config}
@@ -895,6 +1272,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                           schoolClass={cls}
                           schoolName={schoolName}
                           schoolAddress={schoolAddress}
+                          schoolLogo={schoolLogo}
                           foundationWebsite={foundationWebsite}
                           watermarkUrl={watermarkUrl}
                           config={config}
@@ -909,7 +1287,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
         </div>
       )}
 
-      {/* MODAL: PENGATURAN TEMPLATE JENJANG (SMA/MA, SMP/MTS, SD/MI) */}
+      {/* MODAL: PENGATURAN TEMPLATE JENJANG (SMK, SMP/MTS, SD/MI) */}
       {showConfigModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
           <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 sm:p-8 shadow-2xl space-y-6">
@@ -940,7 +1318,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
             {/* Jenjang Switcher Tabs */}
             <div className="flex gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
-              {(['SMA/MA', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).map(lvl => (
+              {(['SMK', 'SMP/MTS', 'SD/MI'] as EducationLevel[]).map(lvl => (
                 <button
                   key={lvl}
                   onClick={() => setActiveConfigTab(lvl)}

@@ -78,17 +78,17 @@ function normalizeEducationLevel(raw?: string): EducationLevel | '' {
   if (!up) return '';
   if (up === 'SD/MI' || up === 'SD' || up === 'MI' || up.startsWith('SD') || up.startsWith('MI')) return 'SD/MI';
   if (up === 'SMP/MTS' || up === 'SMP' || up === 'MTS' || up.startsWith('SMP') || up.startsWith('MTS')) return 'SMP/MTS';
-  if (up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up === 'SMK' || up.startsWith('SMA') || up.startsWith('SMK') || up.startsWith('MA')) return 'SMA/MA';
+  if (up === 'SMK' || up === 'SMA/MA' || up === 'SMA' || up === 'MA' || up.startsWith('SMK') || up.startsWith('SMA') || up.startsWith('MA')) return 'SMK';
   return '';
 }
 
 function detectExplicitLevelFromClassName(className?: string): EducationLevel | '' {
   const clsUp = String(className || '').toUpperCase().trim();
   if (!clsUp) return '';
-  if (/\b(SMA|SMK|MA)\b/.test(clsUp)) return 'SMA/MA';
+  if (/\b(SMK|SMA|MA)\b/.test(clsUp)) return 'SMK';
   if (/\b(SMP|MTS)\b/.test(clsUp)) return 'SMP/MTS';
   if (/\b(SD|MI)\b/.test(clsUp)) return 'SD/MI';
-  if (/\b(XII|XI|X)\b/.test(clsUp) || /(?:^|[\s\-_/])(12|11|10)(?![0-9])/.test(clsUp)) return 'SMA/MA';
+  if (/\b(XII|XI|X)\b/.test(clsUp) || /(?:^|[\s\-_/])(12|11|10)(?![0-9])/.test(clsUp)) return 'SMK';
   if (/\b(IX|VIII|VII)\b/.test(clsUp) || /(?:^|[\s\-_/])(9|8|7)(?![0-9])/.test(clsUp)) return 'SMP/MTS';
   if (/\b(VI|V|IV|III|II|I)\b/.test(clsUp) || /(?:^|[\s\-_/])(6|5|4|3|2|1)(?![0-9])/.test(clsUp)) return 'SD/MI';
   return '';
@@ -101,11 +101,11 @@ function inferEducationLevel(rawLevel?: string, grade?: string | number, classNa
   if (!Number.isNaN(g) && g >= 1 && g <= 12) {
     if (g <= 6) return 'SD/MI';
     if (g <= 9) return 'SMP/MTS';
-    return 'SMA/MA';
+    return 'SMK';
   }
   const byName = detectExplicitLevelFromClassName(className);
   if (byName) return byName;
-  return 'SMA/MA';
+  return 'SMK';
 }
 import { PasswordInput } from '../common/PasswordInput.tsx';
 import { StudentCardManager } from './StudentCardManager.tsx';
@@ -305,7 +305,7 @@ export const AdminDashboard: React.FC = () => {
       if (match) return match.name;
       if (lvl === 'SD/MI') return idx === 0 ? 'IV SD A' : 'V SD B';
       if (lvl === 'SMP/MTS') return idx === 0 ? 'VII SMP A' : 'VIII SMP B';
-      return idx === 0 ? 'X SMA A' : 'XI SMA B';
+      return idx === 0 ? 'X SMK A' : 'XI SMK B';
     };
 
     const studentSample = preferredLevel
@@ -345,8 +345,8 @@ export const AdminDashboard: React.FC = () => {
             jenisKelamin: 'L',
             tempatLahir: 'Jombang',
             tanggalLahir: '12-08-2009',
-            jenjang: 'SMA/MA',
-            kelas: fallbackClassFor('SMA/MA', 0),
+            jenjang: 'SMK',
+            kelas: fallbackClassFor('SMK', 0),
             alamat: 'Jl. Pesantren No. 12, Diwek, Jombang',
             barcodeCard: 'CARD-10202610',
             noHpOrtu: '081234567890',
@@ -909,6 +909,7 @@ export const AdminDashboard: React.FC = () => {
           classes={classes}
           schoolName={settings?.schoolName || 'Yayasan Mambaul Ulum'}
           schoolAddress={settings?.foundationAddress}
+          schoolLogo={settings?.schoolLogo}
           foundationWebsite={settings?.foundationWebsite}
           watermarkUrl={settings?.foundationWatermarkUrl}
           faceTemplates={faceTemplates}
@@ -3293,7 +3294,7 @@ const ClassesSection: React.FC<{
   const [showPromoteModal, setShowPromoteModal] = useState(false);
   const [className, setClassName] = useState('');
   const [grade, setGrade] = useState('10');
-  const [level, setLevel] = useState<EducationLevel>('SMA/MA');
+  const [level, setLevel] = useState<EducationLevel>('SMK');
   const [homeRoomTeacherId, setHomeRoomTeacherId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isPromoting, setIsPromoting] = useState(false);
@@ -3317,7 +3318,7 @@ const ClassesSection: React.FC<{
     setEditingClass(null);
     setClassName('');
     setGrade('10');
-    setLevel('SMA/MA');
+    setLevel('SMK');
     setHomeRoomTeacherId('');
     setShowModal(true);
   };
@@ -3585,9 +3586,9 @@ const ClassesSection: React.FC<{
                     <option value="7">Kelas 7 (SMP/MTS)</option>
                     <option value="8">Kelas 8 (SMP/MTS)</option>
                     <option value="9">Kelas 9 (SMP/MTS)</option>
-                    <option value="10">Kelas 10 (SMA/MA)</option>
-                    <option value="11">Kelas 11 (SMA/MA)</option>
-                    <option value="12">Kelas 12 (SMA/MA)</option>
+                    <option value="10">Kelas 10 (SMK)</option>
+                    <option value="11">Kelas 11 (SMK)</option>
+                    <option value="12">Kelas 12 (SMK)</option>
                   </select>
                 </div>
 
@@ -3600,7 +3601,7 @@ const ClassesSection: React.FC<{
                   >
                     <option value="SD/MI">SD/MI</option>
                     <option value="SMP/MTS">SMP/MTS</option>
-                    <option value="SMA/MA">SMA/MA</option>
+                    <option value="SMK">SMK</option>
                   </select>
                 </div>
               </div>
@@ -3809,7 +3810,7 @@ const StudentsSection: React.FC<{
   const [classId, setClassId] = useState(classes[0]?.id || '');
   const [customClassName, setCustomClassName] = useState('');
   const [useCustomClassInput, setUseCustomClassInput] = useState(classes.length === 0);
-  const [level, setLevel] = useState<EducationLevel>('SMA/MA');
+  const [level, setLevel] = useState<EducationLevel>('SMK');
   const [levelManuallySelected, setLevelManuallySelected] = useState(false);
   const [birthPlace, setBirthPlace] = useState('');
   const [birthDate, setBirthDate] = useState('');
@@ -4107,7 +4108,7 @@ const StudentsSection: React.FC<{
             <option value="ALL">Semua Jenjang</option>
             <option value="SD/MI">SD/MI</option>
             <option value="SMP/MTS">SMP/MTS</option>
-            <option value="SMA/MA">SMA/MA</option>
+            <option value="SMK">SMK</option>
           </select>
           <input
             type="text"
@@ -4402,7 +4403,7 @@ const StudentsSection: React.FC<{
                   >
                     <option value="SD/MI">SD/MI</option>
                     <option value="SMP/MTS">SMP/MTS</option>
-                    <option value="SMA/MA">SMA/MA</option>
+                    <option value="SMK">SMK</option>
                   </select>
                 </div>
               </div>
@@ -4589,7 +4590,7 @@ const BulkUploadSection: React.FC<{
   onSavedToast?: (msg: string) => void;
   onErrorToast?: (msg: string) => void;
 }> = ({ classes, onDownloadTemplate, onRefresh, onSavedToast, onErrorToast }) => {
-  const [selectedLevel, setSelectedLevel] = useState<EducationLevel>('SMA/MA');
+  const [selectedLevel, setSelectedLevel] = useState<EducationLevel>('SMK');
   const [forceSelectedLevel, setForceSelectedLevel] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState(classes[0]?.id || '');
   const [parsedRows, setParsedRows] = useState<any[]>([]);
@@ -4701,7 +4702,7 @@ const BulkUploadSection: React.FC<{
             1. Pilih Jenjang Upload Massal Terlebih Dahulu
           </label>
           <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
-            {(['SD/MI', 'SMP/MTS', 'SMA/MA'] as EducationLevel[]).map(lvl => (
+            {(['SD/MI', 'SMP/MTS', 'SMK'] as EducationLevel[]).map(lvl => (
               <button
                 key={lvl}
                 type="button"
@@ -4746,7 +4747,7 @@ const BulkUploadSection: React.FC<{
       </div>
 
       <div className="p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900 text-[11px] text-blue-800 dark:text-blue-200">
-        Kolom <span className="font-mono font-bold">kelas</span> di Excel yang belum terdaftar akan <strong>otomatis dibuat</strong> pada menu Kelas &amp; Naik Kelas, dan siswa otomatis disinkronkan ke sheet <span className="font-mono font-bold">Siswa_SD_MI</span>, <span className="font-mono font-bold">Siswa_SMP_MTS</span>, dan <span className="font-mono font-bold">Siswa_SMA_MA</span>.
+        Kolom <span className="font-mono font-bold">kelas</span> di Excel yang belum terdaftar akan <strong>otomatis dibuat</strong> pada menu Kelas &amp; Naik Kelas, dan siswa otomatis disinkronkan ke sheet <span className="font-mono font-bold">Siswa_SD_MI</span>, <span className="font-mono font-bold">Siswa_SMP_MTS</span>, dan <span className="font-mono font-bold">Siswa_SMK</span>.
       </div>
 
       <div className="p-6 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 text-center space-y-3 bg-slate-50/50 dark:bg-slate-800/20">

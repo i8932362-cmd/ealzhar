@@ -12,7 +12,7 @@ export interface AuthUser {
   subject?: string;
 }
 
-export type EducationLevel = 'SMA/MA' | 'SMP/MTS' | 'SD/MI';
+export type EducationLevel = 'SMK' | 'SMP/MTS' | 'SD/MI';
 
 export interface LevelConfig {
   level: EducationLevel;
