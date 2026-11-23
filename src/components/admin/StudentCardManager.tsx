@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { toJpeg } from 'html-to-image';
 import JSZip from 'jszip';
 import {
   Download,
@@ -32,7 +31,6 @@ import {
   StudentCardFront,
   StudentCardBack,
   DEFAULT_LEVEL_CONFIGS,
-  ResolvedCardAssetOverrides,
   getStudentInitialAvatarDataUrl,
   getFallbackQrSvgDataUrl,
 } from './StudentCardTemplate.tsx';
@@ -42,7 +40,13 @@ import {
   extractDriveFileId,
   fetchDrivePhotoDataUrl,
   fetchExternalImageAsDataUrl,
+  getCachedDrivePhotoDataUrl,
 } from '../../lib/api.ts';
+import {
+  renderStudentCardFrontJpeg,
+  renderStudentCardBackJpeg,
+  CardExportAssets,
+} from '../../lib/cardCanvasRenderer.ts';
 import { emitActionToast } from '../../lib/toast.ts';
 import { DriveImage, preloadDriveImageUrls } from '../common/DriveImage.tsx';
 
@@ -120,56 +124,20 @@ function mergeWithDefaultLevelConfigs(
   return result;
 }
 
-interface ExportRenderTarget {
-  student: Student;
-  schoolClass?: SchoolClass;
-  config: LevelConfig;
-  hasFace: boolean;
-  assets: ResolvedCardAssetOverrides;
-}
-
-function waitNextAnimationFrames(count = 2): Promise<void> {
-  return new Promise((resolve) => {
-    const step = (remaining: number) => {
-      if (remaining <= 0) {
-        resolve();
-        return;
+function findLoadedDomImgSrc(cardElementIds: string[], selector: string): string {
+  if (typeof document === 'undefined') return '';
+  for (const id of cardElementIds) {
+    const container = document.getElementById(id);
+    if (!container) continue;
+    const img = container.querySelector<HTMLImageElement>(selector);
+    if (img && img.complete && img.naturalWidth > 0) {
+      const candidate = (img.currentSrc || img.src || '').trim();
+      if (candidate.startsWith('data:') || candidate.startsWith('blob:')) {
+        return candidate;
       }
-      requestAnimationFrame(() => step(remaining - 1));
-    };
-    step(count);
-  });
-}
-
-async function waitForImagesInsideElement(container: HTMLElement): Promise<void> {
-  const imgs = Array.from(container.querySelectorAll('img'));
-  await Promise.all(
-    imgs.map(async (img) => {
-      if (!img.getAttribute('src')) return;
-      if (!img.complete || img.naturalWidth === 0) {
-        await new Promise<void>((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            img.removeEventListener('load', finish);
-            img.removeEventListener('error', finish);
-            resolve();
-          };
-          img.addEventListener('load', finish);
-          img.addEventListener('error', finish);
-          setTimeout(finish, 4000);
-        });
-      }
-      if (typeof img.decode === 'function') {
-        try {
-          await img.decode();
-        } catch {
-          // Ignore SVG/data decode edge cases when already loaded
-        }
-      }
-    })
-  );
+    }
+  }
+  return '';
 }
 
 function loadHtmlImage(src: string): Promise<HTMLImageElement> {
@@ -300,8 +268,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   const [saveFeedback, setSaveFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const isDirtyRef = useRef<boolean>(false);
 
-  // Export states (dedicated offscreen stage ensures both sides & all Drive assets always render before capture)
-  const [exportRenderTarget, setExportRenderTarget] = useState<ExportRenderTarget | null>(null);
+  // Export states (direct high-DPI Canvas export ensures Logo, Watermark & Signature never drop)
   const [exportingStudentKey, setExportingStudentKey] = useState<string | null>(null);
   const [isExportingBatch, setIsExportingBatch] = useState<boolean>(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; studentName: string } | null>(null);
@@ -605,33 +572,60 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     }
   };
 
-  // Resolve any asset reference (gas-photo://, Drive URL, HTTPS URL, data:) to inlined Data URL for export
-  const resolveAssetToDataUrl = async (raw?: string): Promise<string> => {
+  // Resolve any asset reference (data:, Drive cache, live preview DOM img, GAS fetch, or HTTPS URL) to Data URL for Canvas export
+  const resolveAssetToDataUrl = async (
+    raw?: string,
+    domFallback?: { cardIds: string[]; selector: string }
+  ): Promise<string> => {
     const clean = String(raw || '').trim();
     if (!clean) return '';
-    if (clean.startsWith('data:')) return clean;
+    if (clean.startsWith('data:') || clean.startsWith('blob:')) return clean;
+
     const driveId = extractDriveFileId(clean);
     if (driveId) {
-      return (await fetchDrivePhotoDataUrl(driveId, 2)) || '';
+      const cached = getCachedDrivePhotoDataUrl(driveId);
+      if (cached) return cached;
+      if (domFallback) {
+        const fromDom = findLoadedDomImgSrc(domFallback.cardIds, domFallback.selector);
+        if (fromDom) return fromDom;
+      }
+      const fetched = await fetchDrivePhotoDataUrl(driveId, 3);
+      if (fetched) return fetched;
+    } else {
+      if (domFallback) {
+        const fromDom = findLoadedDomImgSrc(domFallback.cardIds, domFallback.selector);
+        if (fromDom) return fromDom;
+      }
+      const fetchedExt = await fetchExternalImageAsDataUrl(clean);
+      if (fetchedExt) return fetchedExt;
     }
-    return (await fetchExternalImageAsDataUrl(clean)) || '';
+
+    if (domFallback) {
+      const lastDom = findLoadedDomImgSrc(domFallback.cardIds, domFallback.selector);
+      if (lastDom) return lastDom;
+    }
+    return '';
   };
 
   const resolveLevelAssetsForExport = async (
-    config: LevelConfig
-  ): Promise<Omit<ResolvedCardAssetOverrides, 'studentPhoto'>> => {
+    config: LevelConfig,
+    sampleStudentId?: string
+  ): Promise<Omit<CardExportAssets, 'studentPhoto'>> => {
     const effectiveLogoRaw = config.logoUrl || schoolLogo;
     const effectiveWatermarkRaw = config.watermarkUrl || watermarkUrl;
     const targetWebsite = config.websiteUrl || foundationWebsite || 'https://mambaululum.sch.id';
     const remoteQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(targetWebsite)}&bgcolor=ffffff&color=1e3a8a`;
+    const sampleCardIds = sampleStudentId
+      ? [`card-front-${sampleStudentId}`, `card-back-${sampleStudentId}`]
+      : [];
 
     const [logo, signature, stamp, watermark, qrResolved] = await Promise.all([
-      resolveAssetToDataUrl(effectiveLogoRaw),
-      resolveAssetToDataUrl(config.principalSignatureUrl),
-      resolveAssetToDataUrl(config.stampUrl),
-      resolveAssetToDataUrl(effectiveWatermarkRaw),
+      resolveAssetToDataUrl(effectiveLogoRaw, { cardIds: sampleCardIds, selector: 'img[alt="Logo"]' }),
+      resolveAssetToDataUrl(config.principalSignatureUrl, { cardIds: sampleCardIds, selector: 'img[alt^="TTD "]' }),
+      resolveAssetToDataUrl(config.stampUrl, { cardIds: sampleCardIds, selector: 'img[alt="Stempel Sekolah"]' }),
+      resolveAssetToDataUrl(effectiveWatermarkRaw, { cardIds: sampleCardIds, selector: 'img[alt="Watermark"]' }),
       config.qrCodeUrl
-        ? resolveAssetToDataUrl(config.qrCodeUrl)
+        ? resolveAssetToDataUrl(config.qrCodeUrl, { cardIds: sampleCardIds, selector: 'img[alt="QR Website"]' })
         : fetchExternalImageAsDataUrl(remoteQrUrl).then((d) => d || getFallbackQrSvgDataUrl(targetWebsite)),
     ]);
 
@@ -648,34 +642,16 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
     const fallbackAvatar = getStudentInitialAvatarDataUrl(student.name, student.gender);
     const driveId = extractDriveFileId(student.photoUrl) || student.photoFileId;
     if (driveId) {
-      const d = await fetchDrivePhotoDataUrl(driveId, 2);
-      if (d) return d;
+      const cached = getCachedDrivePhotoDataUrl(driveId);
+      if (cached) return cached;
+      const fetched = await fetchDrivePhotoDataUrl(driveId, 2);
+      if (fetched) return fetched;
     }
     if (student.photoUrl && student.photoUrl.trim().length > 10) {
       const ext = await resolveAssetToDataUrl(student.photoUrl);
       if (ext) return ext;
     }
     return fallbackAvatar;
-  };
-
-  const captureExportCardSide = async (
-    student: Student,
-    side: 'front' | 'back'
-  ): Promise<string> => {
-    await waitNextAnimationFrames(2);
-    const elemId = `export-card-${side}-${student.id}`;
-    const elem = document.getElementById(elemId);
-    if (!elem) {
-      throw new Error(`Komponen kartu ${side === 'front' ? 'depan' : 'belakang'} belum siap dirender.`);
-    }
-    await waitForImagesInsideElement(elem);
-    return toJpeg(elem, {
-      quality: 0.96,
-      pixelRatio: 2.5, // 300 DPI high resolution
-      skipFonts: true,
-      cacheBust: false,
-      backgroundColor: '#ffffff',
-    });
   };
 
   // 1. Download Single Card JPG (Front, Back, or Combined Front+Back)
@@ -689,26 +665,37 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       const cfg = levelConfigs[stdLevel] || DEFAULT_LEVEL_CONFIGS[stdLevel] || DEFAULT_LEVEL_CONFIGS['SMK'];
 
       const [sharedAssets, studentPhoto] = await Promise.all([
-        resolveLevelAssetsForExport(cfg),
+        resolveLevelAssetsForExport(cfg, student.id),
         resolveStudentPhotoForExport(student),
       ]);
 
-      setExportRenderTarget({
-        student,
-        schoolClass: cls,
-        config: cfg,
-        hasFace: enrolledStudentIds.has(student.id),
-        assets: { ...sharedAssets, studentPhoto },
-      });
-
+      const fullAssets: CardExportAssets = { ...sharedAssets, studentPhoto };
       const safeName = student.name.replace(/[^a-zA-Z0-9]/g, '_');
       const nisnCode = student.nisn || student.nis;
       let dataUrl = '';
       let filename = '';
 
       if (side === 'both') {
-        const frontDataUrl = await captureExportCardSide(student, 'front');
-        const backDataUrl = await captureExportCardSide(student, 'back');
+        const [frontDataUrl, backDataUrl] = await Promise.all([
+          renderStudentCardFrontJpeg({
+            student,
+            schoolClass: cls,
+            schoolName,
+            schoolAddress,
+            foundationWebsite,
+            config: cfg,
+            assets: fullAssets,
+          }),
+          renderStudentCardBackJpeg({
+            student,
+            schoolClass: cls,
+            schoolName,
+            schoolAddress,
+            foundationWebsite,
+            config: cfg,
+            assets: fullAssets,
+          }),
+        ]);
         dataUrl = await composeFrontBackCardJpeg(
           frontDataUrl,
           backDataUrl,
@@ -717,9 +704,28 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
           stdLevel
         );
         filename = `KARTU_DEPAN_BELAKANG_${nisnCode}_${safeName}.jpg`;
+      } else if (side === 'front') {
+        dataUrl = await renderStudentCardFrontJpeg({
+          student,
+          schoolClass: cls,
+          schoolName,
+          schoolAddress,
+          foundationWebsite,
+          config: cfg,
+          assets: fullAssets,
+        });
+        filename = `KARTU_FRONT_${nisnCode}_${safeName}.jpg`;
       } else {
-        dataUrl = await captureExportCardSide(student, side);
-        filename = `KARTU_${side.toUpperCase()}_${nisnCode}_${safeName}.jpg`;
+        dataUrl = await renderStudentCardBackJpeg({
+          student,
+          schoolClass: cls,
+          schoolName,
+          schoolAddress,
+          foundationWebsite,
+          config: cfg,
+          assets: fullAssets,
+        });
+        filename = `KARTU_BACK_${nisnCode}_${safeName}.jpg`;
       }
 
       const link = document.createElement('a');
@@ -730,7 +736,6 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       console.error('Download card error:', err);
       setCardError('Gagal mengunduh kartu: ' + (err?.message || 'Kesalahan tidak diketahui'));
     } finally {
-      setExportRenderTarget(null);
       setExportingStudentKey(null);
     }
   };
@@ -755,12 +760,13 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
     try {
       // Pre-resolve shared level assets ONCE per jenjang so Logo, TTD, Stempel, Watermark & QR never disappear
-      const levelAssetMap: Partial<Record<EducationLevel, Omit<ResolvedCardAssetOverrides, 'studentPhoto'>>> = {};
+      const levelAssetMap: Partial<Record<EducationLevel, Omit<CardExportAssets, 'studentPhoto'>>> = {};
       const activeLevelsToExport = Array.from(new Set(filteredStudents.map((s) => getStudentLevel(s))));
       await Promise.all(
         activeLevelsToExport.map(async (lvl) => {
           const cfg = levelConfigs[lvl] || DEFAULT_LEVEL_CONFIGS[lvl] || DEFAULT_LEVEL_CONFIGS['SMK'];
-          levelAssetMap[lvl] = await resolveLevelAssetsForExport(cfg);
+          const sampleStudent = filteredStudents.find((s) => getStudentLevel(s) === lvl);
+          levelAssetMap[lvl] = await resolveLevelAssetsForExport(cfg, sampleStudent?.id);
         })
       );
 
@@ -787,19 +793,30 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
         const stdLevel = getStudentLevel(student);
         const cls = classes.find(c => c.id === student.classId);
         const cfg = levelConfigs[stdLevel] || DEFAULT_LEVEL_CONFIGS[stdLevel] || DEFAULT_LEVEL_CONFIGS['SMK'];
-        const sharedAssets = levelAssetMap[stdLevel] || (await resolveLevelAssetsForExport(cfg));
+        const sharedAssets = levelAssetMap[stdLevel] || (await resolveLevelAssetsForExport(cfg, student.id));
         const studentPhoto = await resolveStudentPhotoForExport(student);
+        const fullAssets: CardExportAssets = { ...sharedAssets, studentPhoto };
 
-        setExportRenderTarget({
-          student,
-          schoolClass: cls,
-          config: cfg,
-          hasFace: enrolledStudentIds.has(student.id),
-          assets: { ...sharedAssets, studentPhoto },
-        });
-
-        const frontDataUrl = await captureExportCardSide(student, 'front');
-        const backDataUrl = await captureExportCardSide(student, 'back');
+        const [frontDataUrl, backDataUrl] = await Promise.all([
+          renderStudentCardFrontJpeg({
+            student,
+            schoolClass: cls,
+            schoolName,
+            schoolAddress,
+            foundationWebsite,
+            config: cfg,
+            assets: fullAssets,
+          }),
+          renderStudentCardBackJpeg({
+            student,
+            schoolClass: cls,
+            schoolName,
+            schoolAddress,
+            foundationWebsite,
+            config: cfg,
+            assets: fullAssets,
+          }),
+        ]);
         const combinedDataUrl = await composeFrontBackCardJpeg(
           frontDataUrl,
           backDataUrl,
@@ -844,7 +861,6 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
       setCardError(errMsg);
       emitActionToast({ type: 'error', title: 'Gagal Ekspor', message: errMsg });
     } finally {
-      setExportRenderTarget(null);
       setIsExportingBatch(false);
       setBatchProgress(null);
     }
@@ -852,48 +868,6 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Offscreen Print/Export Stage — renders BOTH sides synchronously with resolved data URLs regardless of preview filter */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: 'fixed',
-          left: '-12000px',
-          top: 0,
-          width: '920px',
-          opacity: 1,
-          pointerEvents: 'none',
-          zIndex: -1,
-        }}
-      >
-        {exportRenderTarget && (
-          <div className="flex items-start gap-6 bg-white p-2">
-            <StudentCardFront
-              cardIdPrefix="export-"
-              student={exportRenderTarget.student}
-              schoolClass={exportRenderTarget.schoolClass}
-              schoolName={schoolName}
-              schoolAddress={schoolAddress}
-              schoolLogo={schoolLogo}
-              watermarkUrl={watermarkUrl}
-              hasFaceEnrolled={exportRenderTarget.hasFace}
-              config={exportRenderTarget.config}
-              resolvedAssetOverrides={exportRenderTarget.assets}
-            />
-            <StudentCardBack
-              cardIdPrefix="export-"
-              student={exportRenderTarget.student}
-              schoolClass={exportRenderTarget.schoolClass}
-              schoolName={schoolName}
-              schoolAddress={schoolAddress}
-              schoolLogo={schoolLogo}
-              foundationWebsite={foundationWebsite}
-              watermarkUrl={watermarkUrl}
-              config={exportRenderTarget.config}
-              resolvedAssetOverrides={exportRenderTarget.assets}
-            />
-          </div>
-        )}
-      </div>
 
       {/* Top Banner & Action Controls */}
       <div className="p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">

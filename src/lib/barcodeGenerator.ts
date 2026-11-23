@@ -1,5 +1,5 @@
-// Pure client-side Barcode SVG generator (Code 128 / Code 39 encoding)
-// Produces crisp, vector-sharp SVG barcodes for student ID cards and badges without external API dependencies
+// Pure client-side Barcode SVG & Code128 pattern generator
+// Produces crisp, vector-sharp SVG & Canvas barcodes for student ID cards and badges without external API dependencies
 
 const CODE128_PATTERNS: Record<number, string> = {
   0: '212222', 1: '222122', 2: '222221', 3: '121223', 4: '121322', 5: '131222', 6: '122213',
@@ -20,10 +20,9 @@ const CODE128_PATTERNS: Record<number, string> = {
   105: '211232', 106: '2331112' // Stop code
 };
 
-export function generateBarcodeSvg(value: string, height: number = 38): string {
+export function getCode128Pattern(value: string): string {
   const text = (value || '0000000000').trim();
-  // Code 128B start code is 104
-  const startCode = 104;
+  const startCode = 104; // Code 128B
   const codes: number[] = [startCode];
 
   for (let i = 0; i < text.length; i++) {
@@ -33,7 +32,6 @@ export function generateBarcodeSvg(value: string, height: number = 38): string {
     }
   }
 
-  // Calculate checksum
   let checksum = codes[0];
   for (let i = 1; i < codes.length; i++) {
     checksum += codes[i] * i;
@@ -41,11 +39,15 @@ export function generateBarcodeSvg(value: string, height: number = 38): string {
   codes.push(checksum % 103);
   codes.push(106); // Stop code
 
-  // Build pattern
   let pattern = '';
   for (const c of codes) {
     pattern += CODE128_PATTERNS[c] || '212222';
   }
+  return pattern;
+}
+
+export function generateBarcodeSvg(value: string, height: number = 38): string {
+  const pattern = getCode128Pattern(value);
 
   // Render SVG bars
   let x = 0;
