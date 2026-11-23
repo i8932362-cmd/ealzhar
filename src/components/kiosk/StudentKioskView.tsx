@@ -272,7 +272,20 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
     };
   }, []);
 
-  const startCamera = async (modeOverride?: 'user' | 'environment') => {
+  useEffect(() => {
+    if (!isCameraActive || !streamRef.current || !videoRef.current) return;
+    let cancelled = false;
+    attachStreamToVideo(videoRef.current, streamRef.current).then((attachRes) => {
+      if (!cancelled && mountedRef.current) {
+        setNeedsPlayTap(attachRes.needsUserTapToPlay);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCameraActive]);
+
+  const startCamera = async (modeOverride?: 'user' | 'environment', fromUserGesture = false) => {
     const targetMode = modeOverride || facingMode;
     cameraExpectedActiveRef.current = true;
     setCameraError(null);
@@ -295,7 +308,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
         setModelStatus('ready');
       }
 
-      const stream = await acquireCameraStream(targetMode);
+      const stream = await acquireCameraStream(targetMode, { fromUserGesture });
       if (!mountedRef.current || !cameraExpectedActiveRef.current) {
         stopMediaStreamSafely(stream);
         return;
@@ -319,7 +332,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
       setIsCameraActive(true);
       startDetectionLoop();
     } catch (err: any) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || err?.message === 'Camera request superseded') return;
       cameraExpectedActiveRef.current = false;
       setIsRequestingCamera(false);
       setIsCameraActive(false);
@@ -350,7 +363,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
     setFacingMode(nextMode);
     setMirrorPreview(nextMode === 'user');
     if (isCameraActive) {
-      void startCamera(nextMode);
+      void startCamera(nextMode, true);
     }
   };
 
@@ -942,7 +955,26 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                 }}
                 maxHeightClass="h-[58dvh] min-h-[360px] max-h-[640px] sm:h-[500px] lg:h-[580px]"
                 onVideoDimensions={(w, h) => setVideoAspect(w / h)}
-              />
+              >
+                {isRequestingCamera && (
+                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/75 backdrop-blur-xs p-5 text-center space-y-3">
+                    <Camera className="w-10 h-10 text-sky-400 animate-pulse" />
+                    <div className="space-y-1 max-w-xs">
+                      <div className="text-sm font-bold text-white">Meminta Izin Pengaktifan Kamera</div>
+                      <p className="text-xs text-slate-300">
+                        Klik &ldquo;Izinkan / Allow&rdquo; pada dialog perangkat atau ketuk tombol di bawah agar kamera langsung terbuka.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void startCamera(undefined, true)}
+                      className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg cursor-pointer transition"
+                    >
+                      Izinkan &amp; Aktifkan Kamera
+                    </button>
+                  </div>
+                )}
+              </CameraPreviewStage>
             )}
 
             {!isCameraActive && (
@@ -968,11 +1000,11 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                 )}
 
                 <button
-                  onClick={() => void startCamera()}
-                  className="w-full py-4 px-6 rounded-2xl text-base font-bold text-white bg-blue-600 hover:bg-blue-500 active:scale-98 shadow-lg shadow-blue-600/30 transition flex items-center justify-center gap-3"
+                  onClick={() => void startCamera(undefined, true)}
+                  className="w-full py-4 px-6 rounded-2xl text-base font-bold text-white bg-blue-600 hover:bg-blue-500 active:scale-98 shadow-lg shadow-blue-600/30 transition flex items-center justify-center gap-3 cursor-pointer"
                 >
                   <Camera className="w-5 h-5" />
-                  <span>{cameraError ? 'Coba Lagi' : 'Aktifkan Kamera'}</span>
+                  <span>{cameraError ? 'Izinkan & Coba Lagi' : 'Aktifkan Kamera'}</span>
                 </button>
               </div>
             )}

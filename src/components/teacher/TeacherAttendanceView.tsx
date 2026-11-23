@@ -391,6 +391,19 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     };
   }, []);
 
+  useEffect(() => {
+    if (!isCameraActive || !streamRef.current || !videoRef.current) return;
+    let cancelled = false;
+    attachStreamToVideo(videoRef.current, streamRef.current).then((attachRes) => {
+      if (!cancelled && mountedRef.current) {
+        setNeedsPlayTap(attachRes.needsUserTapToPlay);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCameraActive]);
+
   // Submit Check-In or Check-Out (NO photo captured or saved — stores only nama & nip on server)
   const submitAttendanceDirect = useCallback(
     async (
@@ -688,7 +701,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     animFrameRef.current = requestAnimationFrame(runFrame);
   };
 
-  const startCamera = async (modeOverride?: 'user' | 'environment') => {
+  const startCamera = async (modeOverride?: 'user' | 'environment', fromUserGesture = false) => {
     const targetMode = modeOverride || facingMode;
     cameraExpectedActiveRef.current = true;
     setCameraError(null);
@@ -713,7 +726,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
         setModelStatus('ready');
       }
 
-      const stream = await acquireCameraStream(targetMode);
+      const stream = await acquireCameraStream(targetMode, { fromUserGesture });
       if (!mountedRef.current || !cameraExpectedActiveRef.current) {
         stopMediaStreamSafely(stream);
         return;
@@ -735,7 +748,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       setIsRequestingCamera(false);
       startDetectionLoop();
     } catch (err: any) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || err?.message === 'Camera request superseded') return;
       cameraExpectedActiveRef.current = false;
       setIsCameraActive(false);
       setIsRequestingCamera(false);
@@ -766,7 +779,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     setFacingMode(nextMode);
     setMirrorPreview(nextMode === 'user');
     if (isCameraActive) {
-      void startCamera(nextMode);
+      void startCamera(nextMode, true);
     }
   };
 
@@ -1085,6 +1098,25 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                       Wajah terdeteksi — tidak cocok dengan database wajah guru
                     </div>
                   )}
+
+                  {isRequestingCamera && (
+                    <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/75 backdrop-blur-xs p-5 text-center space-y-3">
+                      <Camera className="w-9 h-9 text-indigo-400 animate-pulse" />
+                      <div className="space-y-1 max-w-xs">
+                        <div className="text-xs font-bold text-white">Meminta Izin Pengaktifan Kamera</div>
+                        <p className="text-[11px] text-slate-300">
+                          Klik &ldquo;Izinkan / Allow&rdquo; pada dialog perangkat atau ketuk tombol di bawah untuk memunculkan izin kamera.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void startCamera(undefined, true)}
+                        className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow cursor-pointer transition"
+                      >
+                        Izinkan &amp; Aktifkan Kamera
+                      </button>
+                    </div>
+                  )}
                 </CameraPreviewStage>
               </div>
             )}
@@ -1113,11 +1145,11 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                 )}
 
                 <button
-                  onClick={() => void startCamera()}
-                  className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow flex items-center gap-2 mx-auto"
+                  onClick={() => void startCamera(undefined, true)}
+                  className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow flex items-center gap-2 mx-auto cursor-pointer"
                 >
                   <Camera className="w-4 h-4" />
-                  <span>{cameraError ? 'Coba Lagi' : isRequestingCamera ? 'Minta Ulang Izin Kamera' : 'Aktifkan Kamera'}</span>
+                  <span>{cameraError ? 'Izinkan & Coba Lagi' : isRequestingCamera ? 'Minta Ulang Izin Kamera' : 'Aktifkan Kamera'}</span>
                 </button>
               </div>
             )}

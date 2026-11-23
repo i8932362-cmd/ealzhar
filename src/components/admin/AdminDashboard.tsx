@@ -1527,6 +1527,8 @@ const FaceDatabaseSection: React.FC<{
   const [selectedPersonType, setSelectedPersonType] = useState<'student' | 'teacher'>('student');
   const [selectedPersonId, setSelectedPersonId] = useState<string>('');
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [isRequestingCamera, setIsRequestingCamera] = useState<boolean>(true);
+  const [cameraError, setCameraError] = useState<{ title: string; message: string } | null>(null);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [searchList, setSearchList] = useState<string>('');
@@ -1540,7 +1542,7 @@ const FaceDatabaseSection: React.FC<{
   const streamRef = useRef<MediaStream | null>(null);
   const photoUploadRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef<boolean>(true);
-  const cameraExpectedActiveRef = useRef<boolean>(false);
+  const cameraExpectedActiveRef = useRef<boolean>(true);
   const facingModeRef = useRef<'user' | 'environment'>('user');
   facingModeRef.current = facingMode;
 
@@ -1551,6 +1553,9 @@ const FaceDatabaseSection: React.FC<{
     if (!areFaceModelsLoaded()) {
       loadFaceDetectionModels().catch(() => {});
     }
+
+    // Request camera permission & open camera immediately when Perekaman Wajah opens
+    void startCamera();
 
     const detachResumeListeners = attachCameraResumeListeners({
       getStream: () => streamRef.current,
@@ -1570,12 +1575,28 @@ const FaceDatabaseSection: React.FC<{
     };
   }, []);
 
-  const startCamera = async (modeOverride?: 'user' | 'environment') => {
+  // Ensure stream always binds even if <CameraPreviewStage> mounts a render after startCamera starts
+  useEffect(() => {
+    if (!isCameraActive || !streamRef.current || !videoRef.current) return;
+    let cancelled = false;
+    attachStreamToVideo(videoRef.current, streamRef.current).then((attachRes) => {
+      if (!cancelled && mountedRef.current) {
+        setNeedsPlayTap(attachRes.needsUserTapToPlay);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCameraActive]);
+
+  const startCamera = async (modeOverride?: 'user' | 'environment', fromUserGesture = false) => {
     const targetMode = modeOverride || facingMode;
     cameraExpectedActiveRef.current = true;
     setMessage(null);
+    setCameraError(null);
     setNeedsPlayTap(false);
     setIsCameraActive(true);
+    setIsRequestingCamera(true);
     try {
       if (streamRef.current) {
         stopMediaStreamSafely(streamRef.current);
@@ -1584,7 +1605,8 @@ const FaceDatabaseSection: React.FC<{
       if (!areFaceModelsLoaded()) {
         loadFaceDetectionModels().catch(() => {});
       }
-      const stream = await acquireCameraStream(targetMode);
+      // Invoke getUserMedia synchronously in caller callstack to guarantee PWA/mobile permission prompt
+      const stream = await acquireCameraStream(targetMode, { fromUserGesture });
       if (!mountedRef.current || !cameraExpectedActiveRef.current) {
         stopMediaStreamSafely(stream);
         return;
@@ -1599,13 +1621,16 @@ const FaceDatabaseSection: React.FC<{
         setNeedsPlayTap(attachRes.needsUserTapToPlay);
       }
       if (!mountedRef.current) return;
+      setIsRequestingCamera(false);
       setIsCameraActive(true);
     } catch (e: any) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || e?.message === 'Camera request superseded') return;
       cameraExpectedActiveRef.current = false;
+      setIsRequestingCamera(false);
       setIsCameraActive(false);
       setNeedsPlayTap(false);
       const parsed = parseCameraError(e);
+      setCameraError(parsed);
       setMessage({ type: 'error', text: `${parsed.title}: ${parsed.message}` });
     }
   };
@@ -1616,6 +1641,7 @@ const FaceDatabaseSection: React.FC<{
       stopMediaStreamSafely(streamRef.current);
       streamRef.current = null;
     }
+    setIsRequestingCamera(false);
     setIsCameraActive(false);
     setNeedsPlayTap(false);
   };
@@ -1625,7 +1651,7 @@ const FaceDatabaseSection: React.FC<{
     setFacingMode(nextMode);
     setMirrorPreview(nextMode === 'user');
     if (isCameraActive) {
-      startCamera(nextMode);
+      void startCamera(nextMode, true);
     }
   };
 
@@ -1904,22 +1930,70 @@ const FaceDatabaseSection: React.FC<{
                   void videoRef.current?.play().then(() => setNeedsPlayTap(false)).catch(() => {});
                 }}
                 maxHeightClass="h-[50dvh] min-h-[340px] max-h-[540px] sm:h-[440px]"
-              />
+              >
+                <div className="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/65 backdrop-blur-md text-white text-[11px] font-medium border border-white/10">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        isRequestingCamera ? 'bg-sky-400 animate-pulse' : 'bg-emerald-500 animate-pulse'
+                      }`}
+                    />
+                    <span>
+                      {isRequestingCamera
+                        ? 'Meminta izin akses kamera...'
+                        : `Kamera Aktif (${mirrorPreview ? 'Kanan di Kanan' : 'Sensor Asli'})`}
+                    </span>
+                  </div>
+                  {!selectedPersonId && (
+                    <div className="px-2.5 py-1 rounded-lg bg-amber-500/90 text-white text-[10px] font-bold shadow">
+                      Pilih nama {selectedPersonType === 'student' ? 'siswa' : 'guru'} di atas sebelum simpan
+                    </div>
+                  )}
+                </div>
+
+                {isRequestingCamera && (
+                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/75 backdrop-blur-xs p-5 text-center space-y-3">
+                    <Camera className="w-9 h-9 text-sky-400 animate-pulse" />
+                    <div className="space-y-1 max-w-xs">
+                      <div className="text-xs font-bold text-white">Meminta Izin Pengaktifan Kamera</div>
+                      <p className="text-[11px] text-slate-300">
+                        Klik &ldquo;Izinkan / Allow&rdquo; pada dialog perangkat atau ketuk tombol di bawah untuk memunculkan izin kamera.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void startCamera(undefined, true)}
+                      className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow cursor-pointer transition"
+                    >
+                      Izinkan &amp; Nyalakan Kamera
+                    </button>
+                  </div>
+                )}
+              </CameraPreviewStage>
             )}
             {!isCameraActive && (
-              <div className="text-center p-6 space-y-3">
-                <Camera className="w-10 h-10 text-slate-500 mx-auto" />
-                <p className="text-xs text-slate-400">
-                  Pilih nama terlebih dahulu, lalu nyalakan kamera atau upload foto wajah
+              <div className="text-center p-6 space-y-3 max-w-sm">
+                <Camera className="w-10 h-10 text-blue-400 mx-auto" />
+                <p className="text-xs text-slate-300">
+                  {cameraError
+                    ? 'Akses kamera belum aktif. Ketuk tombol di bawah untuk memunculkan dialog izin kamera pada perangkat ini.'
+                    : 'Nyalakan kamera untuk merekam wajah secara langsung atau upload foto wajah.'}
                 </p>
+                {cameraError && (
+                  <div className="p-3 rounded-xl bg-red-950/80 border border-red-800 text-left text-[11px] text-red-200 space-y-1">
+                    <div className="font-bold text-red-100">{cameraError.title}</div>
+                    <div>{cameraError.message}</div>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
-                    onClick={() => startCamera()}
-                    disabled={!selectedPersonId || isCapturing}
-                    className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl disabled:opacity-50"
+                    onClick={() => void startCamera(undefined, true)}
+                    disabled={isCapturing}
+                    className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl disabled:opacity-50 inline-flex items-center gap-1.5 cursor-pointer"
                   >
-                    Nyalakan Kamera
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>{cameraError ? 'Izinkan & Coba Lagi' : 'Nyalakan Kamera'}</span>
                   </button>
                   <label
                     className={`px-4 py-2 text-xs font-bold rounded-xl border border-slate-600 text-slate-200 hover:bg-slate-800 cursor-pointer transition inline-flex items-center gap-1.5 ${
@@ -1947,21 +2021,44 @@ const FaceDatabaseSection: React.FC<{
               <button
                 type="button"
                 onClick={handleEnrollFace}
-                disabled={isCapturing}
-                className="flex-1 py-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow transition inline-flex items-center justify-center gap-2 disabled:opacity-60"
+                disabled={!selectedPersonId || isCapturing || isRequestingCamera}
+                className="flex-1 py-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow transition inline-flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                title={!selectedPersonId ? 'Pilih nama siswa atau guru di atas terlebih dahulu' : 'Rekam wajah dan simpan vektor'}
               >
                 {isCapturing ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>Menyimpan Vektor Wajah...</span>
                   </>
+                ) : !selectedPersonId ? (
+                  <>
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Pilih Nama Siswa / Guru Dulu</span>
+                  </>
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Ambil Foto & Simpan Vektor</span>
+                    <span>Ambil Foto &amp; Simpan Vektor</span>
                   </>
                 )}
               </button>
+              <label
+                className={`px-3.5 py-3 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer transition inline-flex items-center gap-1.5 ${
+                  !selectedPersonId || isCapturing ? 'opacity-50 pointer-events-none' : ''
+                }`}
+                title="Atau upload file foto wajah"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload Foto</span>
+                <input
+                  ref={photoUploadRef}
+                  type="file"
+                  accept="image/*"
+                  disabled={!selectedPersonId || isCapturing}
+                  onChange={handleUploadPhotoEnroll}
+                  className="hidden"
+                />
+              </label>
               <button
                 type="button"
                 onClick={() => setMirrorPreview(v => !v)}
@@ -1982,7 +2079,7 @@ const FaceDatabaseSection: React.FC<{
                 onClick={stopCamera}
                 className="px-4 py-3 text-xs font-semibold rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
               >
-                Batal
+                Tutup
               </button>
             </div>
           )}

@@ -122,8 +122,16 @@ export default defineConfig(() => {
       port: 3000,
       host: '0.0.0.0',
       allowedHosts: true as const,
+      headers: {
+        'Permissions-Policy': 'camera=*, microphone=(), geolocation=*',
+      },
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    preview: {
+      headers: {
+        'Permissions-Policy': 'camera=*, microphone=(), geolocation=*',
+      },
     },
   };
 });

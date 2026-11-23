@@ -48,11 +48,27 @@ export function preloadFaceModelsInBackground(): void {
 }
 
 let currentActiveStream: MediaStream | null = null;
-let cameraOperationQueue: Promise<unknown> = Promise.resolve();
+let inFlightAcquire: Promise<MediaStream> | null = null;
 let lastStreamStoppedAt = 0;
+let acquireSequence = 0;
 
 function delayMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function queryCameraPermissionState(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'> {
+  if (typeof navigator === 'undefined' || !navigator.permissions?.query) {
+    return 'unknown';
+  }
+  try {
+    const status = await navigator.permissions.query({ name: 'camera' as PermissionName });
+    if (status.state === 'granted' || status.state === 'denied' || status.state === 'prompt') {
+      return status.state;
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 export function isStandalonePWA(): boolean {
@@ -145,19 +161,18 @@ function pickPreferredVideoDeviceIds(
 
 /**
  * Universal, serialized cross-device & installed-PWA camera stream acquisition.
- * Works reliably across Android (Chrome/WebAPK), iOS/iPadOS (Safari/Home Screen PWA),
- * and Desktop (Chrome/Edge/macOS/Windows) without hardware lock collisions.
+ * Invokes the first getUserMedia() synchronously in the caller's callstack when idle
+ * or when triggered from a user gesture so Safari/iOS PWA/Android WebAPK immediately display the permission prompt.
  */
-export async function acquireCameraStream(
-  preferredFacingMode: 'user' | 'environment' = 'user'
+export function acquireCameraStream(
+  preferredFacingMode: 'user' | 'environment' = 'user',
+  options?: { fromUserGesture?: boolean }
 ): Promise<MediaStream> {
-  const runAcquire = async (): Promise<MediaStream> => {
-    // Always stop any lingering previous camera stream first so Android/iOS/Desktop doesn't hit NotReadableError
+  const mySeq = ++acquireSequence;
+
+  const runAcquireSync = (): Promise<MediaStream> => {
+    // Stop any lingering previous camera stream synchronously before requesting a new one
     stopMediaStreamSafely();
-    const elapsedSinceStop = Date.now() - lastStreamStoppedAt;
-    if (lastStreamStoppedAt > 0 && elapsedSinceStop < 220) {
-      await delayMs(220 - elapsedSinceStop);
-    }
 
     const attempts: MediaStreamConstraints[] = [
       // Attempt 1: Wide 16:9 HD stream with preferred facing mode
@@ -187,13 +202,16 @@ export async function acquireCameraStream(
       },
     ];
 
-    let lastError: any = null;
     const isPermissionFatal = (err: any) => {
       const n = err?.name || '';
       return n === 'NotAllowedError' || n === 'PermissionDeniedError' || n === 'SecurityError';
     };
 
     const registerAndReturn = (stream: MediaStream): MediaStream => {
+      if (mySeq !== acquireSequence) {
+        stopMediaStreamSafely(stream);
+        throw new DOMException('Camera request superseded', 'AbortError');
+      }
       currentActiveStream = stream;
       stream.getVideoTracks().forEach((track) => {
         track.addEventListener('ended', () => {
@@ -206,79 +224,118 @@ export async function acquireCameraStream(
       return stream;
     };
 
-    for (const constraints of attempts) {
+    // Kick off Attempt 1 IMMEDIATELY in this synchronous tick to preserve browser user activation!
+    const firstAttemptPromise = requestLegacyOrModernUserMedia(attempts[0]);
+
+    return (async () => {
+      let lastError: any = null;
       try {
-        const stream = await requestLegacyOrModernUserMedia(constraints);
-        return registerAndReturn(stream);
+        const firstStream = await firstAttemptPromise;
+        return registerAndReturn(firstStream);
       } catch (err: any) {
         lastError = err;
-        if (isPermissionFatal(err)) {
+        if (mySeq !== acquireSequence || isPermissionFatal(err)) {
           throw err;
         }
       }
-    }
 
-    // Attempt 4: Explicit deviceId fallback (helps on iPad/Android WebAPK/USB webcams where facingMode fails)
-    try {
-      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.enumerateDevices) {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const candidateIds = pickPreferredVideoDeviceIds(devices, preferredFacingMode);
-        for (const deviceId of candidateIds) {
+      for (const constraints of attempts.slice(1)) {
+        if (mySeq !== acquireSequence) {
+          throw new DOMException('Camera request superseded', 'AbortError');
+        }
+        try {
+          const stream = await requestLegacyOrModernUserMedia(constraints);
+          return registerAndReturn(stream);
+        } catch (err: any) {
+          lastError = err;
+          if (mySeq !== acquireSequence || isPermissionFatal(err)) {
+            throw err;
+          }
+        }
+      }
+
+      // Attempt 4: Explicit deviceId fallback (helps on iPad/Android WebAPK/USB webcams where facingMode fails)
+      try {
+        if (typeof navigator !== 'undefined' && navigator.mediaDevices?.enumerateDevices) {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const candidateIds = pickPreferredVideoDeviceIds(devices, preferredFacingMode);
+          for (const deviceId of candidateIds) {
+            if (mySeq !== acquireSequence) {
+              throw new DOMException('Camera request superseded', 'AbortError');
+            }
+            try {
+              const stream = await requestLegacyOrModernUserMedia({
+                video: { deviceId: { exact: deviceId } },
+                audio: false,
+              });
+              return registerAndReturn(stream);
+            } catch (err: any) {
+              lastError = err;
+              if (mySeq !== acquireSequence || isPermissionFatal(err)) {
+                throw err;
+              }
+            }
+          }
+        }
+      } catch (enumErr: any) {
+        if (mySeq !== acquireSequence || isPermissionFatal(enumErr)) throw enumErr;
+      }
+
+      // Attempt 5: Universal basic video fallback
+      try {
+        const stream = await requestLegacyOrModernUserMedia({ video: true, audio: false });
+        return registerAndReturn(stream);
+      } catch (err: any) {
+        lastError = err;
+        if (mySeq !== acquireSequence || isPermissionFatal(err)) {
+          throw err;
+        }
+      }
+
+      // Attempt 6: Transient hardware-release retry after brief cooldown (handles mobile PWA camera daemon delay)
+      const errName = lastError?.name || '';
+      if (
+        errName === 'NotReadableError' ||
+        errName === 'TrackStartError' ||
+        errName === 'AbortError' ||
+        lastStreamStoppedAt > 0
+      ) {
+        await delayMs(420);
+        if (mySeq !== acquireSequence) {
+          throw new DOMException('Camera request superseded', 'AbortError');
+        }
+        for (const retryConstraints of [
+          { video: { facingMode: { ideal: preferredFacingMode } }, audio: false },
+          { video: true, audio: false },
+        ] as MediaStreamConstraints[]) {
           try {
-            const stream = await requestLegacyOrModernUserMedia({
-              video: { deviceId: { exact: deviceId } },
-              audio: false,
-            });
+            const stream = await requestLegacyOrModernUserMedia(retryConstraints);
             return registerAndReturn(stream);
-          } catch (err: any) {
-            lastError = err;
-            if (isPermissionFatal(err)) {
-              throw err;
+          } catch (retryErr: any) {
+            lastError = retryErr;
+            if (mySeq !== acquireSequence || isPermissionFatal(retryErr)) {
+              throw retryErr;
             }
           }
         }
       }
-    } catch (enumErr: any) {
-      if (isPermissionFatal(enumErr)) throw enumErr;
-    }
 
-    // Attempt 5: Universal basic video fallback
-    try {
-      const stream = await requestLegacyOrModernUserMedia({ video: true, audio: false });
-      return registerAndReturn(stream);
-    } catch (err: any) {
-      lastError = err;
-      if (isPermissionFatal(err)) {
-        throw err;
-      }
-    }
-
-    // Attempt 6: Transient hardware-release retry after brief cooldown (handles mobile PWA camera daemon delay)
-    const errName = lastError?.name || '';
-    if (errName === 'NotReadableError' || errName === 'TrackStartError' || errName === 'AbortError') {
-      await delayMs(420);
-      for (const retryConstraints of [
-        { video: { facingMode: { ideal: preferredFacingMode } }, audio: false },
-        { video: true, audio: false },
-      ] as MediaStreamConstraints[]) {
-        try {
-          const stream = await requestLegacyOrModernUserMedia(retryConstraints);
-          return registerAndReturn(stream);
-        } catch (retryErr: any) {
-          lastError = retryErr;
-          if (isPermissionFatal(retryErr)) {
-            throw retryErr;
-          }
-        }
-      }
-    }
-
-    throw lastError || new Error('Gagal membuka kamera pada perangkat ini.');
+      throw lastError || new Error('Gagal membuka kamera pada perangkat ini.');
+    })();
   };
 
-  const queued = cameraOperationQueue.then(runAcquire, runAcquire);
-  cameraOperationQueue = queued.catch(() => {});
-  return queued;
+  const nextAcquire =
+    options?.fromUserGesture || !inFlightAcquire
+      ? runAcquireSync()
+      : inFlightAcquire.then(() => runAcquireSync(), () => runAcquireSync());
+
+  const tracked = nextAcquire.finally(() => {
+    if (inFlightAcquire === tracked) {
+      inFlightAcquire = null;
+    }
+  });
+  inFlightAcquire = tracked;
+  return tracked;
 }
 
 /**

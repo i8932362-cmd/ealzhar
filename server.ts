@@ -96,11 +96,17 @@ async function startServer() {
     }
   });
 
+  const httpServer = http.createServer(app);
+
   // Mount Vite middleware in development, or serve static dist in production
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR !== 'true',
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -112,7 +118,6 @@ async function startServer() {
     });
   }
 
-  const httpServer = http.createServer(app);
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Frontend server running on http://0.0.0.0:${PORT}`);
   });
