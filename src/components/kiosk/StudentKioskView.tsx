@@ -29,6 +29,8 @@ import {
   areFaceModelsLoaded,
   acquireCameraStream,
   attachStreamToVideo,
+  stopMediaStreamSafely,
+  attachCameraResumeListeners,
   detectFacesInVideo,
   findBestFaceMatch,
   parseCameraError,
@@ -141,6 +143,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
   const [cameraError, setCameraError] = useState<{ title: string; message: string } | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [mirrorPreview, setMirrorPreview] = useState<boolean>(true);
+  const [needsPlayTap, setNeedsPlayTap] = useState<boolean>(false);
   const mirrorPreviewRef = useRef<boolean>(true);
   mirrorPreviewRef.current = mirrorPreview;
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
@@ -154,6 +157,9 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
   const isDetectingRef = useRef<boolean>(false);
   const lastDetectTimeRef = useRef<number>(0);
   const mountedRef = useRef<boolean>(true);
+  const cameraExpectedActiveRef = useRef<boolean>(true);
+  const facingModeRef = useRef<'user' | 'environment'>('user');
+  facingModeRef.current = facingMode;
 
   // Auto-submit scan refs & deduplication
   const scanInputRef = useRef<HTMLInputElement | null>(null);
@@ -247,8 +253,20 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 
     void startCamera();
 
+    const detachResumeListeners = attachCameraResumeListeners({
+      getStream: () => streamRef.current,
+      getVideo: () => videoRef.current,
+      isCameraExpectedActive: () => mountedRef.current && cameraExpectedActiveRef.current,
+      onNeedRestart: () => {
+        if (mountedRef.current && cameraExpectedActiveRef.current) {
+          void startCamera(facingModeRef.current);
+        }
+      },
+    });
+
     return () => {
       mountedRef.current = false;
+      detachResumeListeners();
       stopCamera();
       if (manualDebounceRef.current) clearTimeout(manualDebounceRef.current);
     };
@@ -256,13 +274,15 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
 
   const startCamera = async (modeOverride?: 'user' | 'environment') => {
     const targetMode = modeOverride || facingMode;
+    cameraExpectedActiveRef.current = true;
     setCameraError(null);
+    setNeedsPlayTap(false);
     setIsCameraActive(true);
     setIsRequestingCamera(true);
 
     try {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
+        stopMediaStreamSafely(streamRef.current);
         streamRef.current = null;
       }
 
@@ -276,18 +296,19 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
       }
 
       const stream = await acquireCameraStream(targetMode);
-      if (!mountedRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
+      if (!mountedRef.current || !cameraExpectedActiveRef.current) {
+        stopMediaStreamSafely(stream);
         return;
       }
       streamRef.current = stream;
 
       if (videoRef.current) {
-        await attachStreamToVideo(videoRef.current, stream);
-        if (!mountedRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
+        const attachRes = await attachStreamToVideo(videoRef.current, stream);
+        if (!mountedRef.current || !cameraExpectedActiveRef.current) {
+          stopMediaStreamSafely(stream);
           return;
         }
+        setNeedsPlayTap(attachRes.needsUserTapToPlay);
         if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
           setVideoAspect(videoRef.current.videoWidth / videoRef.current.videoHeight);
         }
@@ -299,15 +320,18 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
       startDetectionLoop();
     } catch (err: any) {
       if (!mountedRef.current) return;
+      cameraExpectedActiveRef.current = false;
       setIsRequestingCamera(false);
       setIsCameraActive(false);
+      setNeedsPlayTap(false);
       setCameraError(parseCameraError(err));
     }
   };
 
   const stopCamera = () => {
+    cameraExpectedActiveRef.current = false;
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      stopMediaStreamSafely(streamRef.current);
       streamRef.current = null;
     }
     if (animFrameRef.current) {
@@ -316,6 +340,7 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
     }
     setIsRequestingCamera(false);
     setIsCameraActive(false);
+    setNeedsPlayTap(false);
     setDetectedStudentsInFrame([]);
     setHasFaceInFrame(false);
   };
@@ -911,6 +936,10 @@ export const StudentKioskView: React.FC<StudentKioskViewProps> = ({ onReturnToPo
                 isActive={isCameraActive}
                 showGuideFrame
                 mirrorPreview={mirrorPreview}
+                needsPlayTap={needsPlayTap}
+                onTapToPlay={() => {
+                  void videoRef.current?.play().then(() => setNeedsPlayTap(false)).catch(() => {});
+                }}
                 maxHeightClass="h-[58dvh] min-h-[360px] max-h-[640px] sm:h-[500px] lg:h-[580px]"
                 onVideoDimensions={(w, h) => setVideoAspect(w / h)}
               />

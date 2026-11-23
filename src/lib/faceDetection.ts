@@ -47,88 +47,349 @@ export function preloadFaceModelsInBackground(): void {
   loadFaceDetectionModels().catch(() => {});
 }
 
+let currentActiveStream: MediaStream | null = null;
+let cameraOperationQueue: Promise<unknown> = Promise.resolve();
+let lastStreamStoppedAt = 0;
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isStandalonePWA(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return (
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      window.matchMedia?.('(display-mode: fullscreen)').matches ||
+      window.matchMedia?.('(display-mode: minimal-ui)').matches ||
+      Boolean((window.navigator as unknown as { standalone?: boolean }).standalone)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function stopMediaStreamSafely(stream?: MediaStream | null): void {
+  const targets = new Set<MediaStream>();
+  if (stream) targets.add(stream);
+  if (!stream && currentActiveStream) targets.add(currentActiveStream);
+
+  let stoppedLiveTrack = false;
+  targets.forEach((s) => {
+    try {
+      s.getTracks().forEach((track) => {
+        if (track.readyState === 'live') {
+          stoppedLiveTrack = true;
+        }
+        try {
+          track.stop();
+        } catch {
+          // Ignore individual track stop errors
+        }
+      });
+    } catch {
+      // Ignore stream iteration errors
+    }
+    if (currentActiveStream === s) {
+      currentActiveStream = null;
+    }
+  });
+
+  if (stoppedLiveTrack) {
+    lastStreamStoppedAt = Date.now();
+  }
+}
+
+function requestLegacyOrModernUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> {
+  if (typeof navigator !== 'undefined' && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
+    return navigator.mediaDevices.getUserMedia(constraints);
+  }
+  const legacyNav = (typeof navigator !== 'undefined' ? navigator : {}) as {
+    getUserMedia?: (c: MediaStreamConstraints, ok: (s: MediaStream) => void, err: (e: any) => void) => void;
+    webkitGetUserMedia?: (c: MediaStreamConstraints, ok: (s: MediaStream) => void, err: (e: any) => void) => void;
+    mozGetUserMedia?: (c: MediaStreamConstraints, ok: (s: MediaStream) => void, err: (e: any) => void) => void;
+  };
+  const legacyFn = legacyNav.getUserMedia || legacyNav.webkitGetUserMedia || legacyNav.mozGetUserMedia;
+  if (legacyFn) {
+    return new Promise((resolve, reject) => {
+      legacyFn.call(navigator, constraints, resolve, reject);
+    });
+  }
+  return Promise.reject(new Error('Browser atau aplikasi ini tidak mendukung akses kamera atau halaman tidak dibuka melalui HTTPS.'));
+}
+
+function pickPreferredVideoDeviceIds(
+  devices: MediaDeviceInfo[],
+  preferredFacingMode: 'user' | 'environment'
+): string[] {
+  const videoInputs = devices.filter((d) => d.kind === 'videoinput' && d.deviceId);
+  if (videoInputs.length === 0) return [];
+
+  const isFrontLabel = (label: string) =>
+    /front|depan|user|facetime|selfie|integrated|webcam/i.test(label);
+  const isBackLabel = (label: string) =>
+    /back|rear|belakang|environment|trid|wide|main/i.test(label);
+
+  const ordered = [...videoInputs].sort((a, b) => {
+    const aScore = preferredFacingMode === 'user'
+      ? (isFrontLabel(a.label) ? 2 : isBackLabel(a.label) ? 0 : 1)
+      : (isBackLabel(a.label) ? 2 : isFrontLabel(a.label) ? 0 : 1);
+    const bScore = preferredFacingMode === 'user'
+      ? (isFrontLabel(b.label) ? 2 : isBackLabel(b.label) ? 0 : 1)
+      : (isBackLabel(b.label) ? 2 : isFrontLabel(b.label) ? 0 : 1);
+    return bScore - aScore;
+  });
+
+  return ordered.map((d) => d.deviceId);
+}
+
 /**
- * Universal, fast cross-device camera stream acquisition.
- * Uses progressive constraint fallback so phones (iOS/Android), tablets,
- * laptops, and external USB webcams open immediately without OverconstrainedError.
+ * Universal, serialized cross-device & installed-PWA camera stream acquisition.
+ * Works reliably across Android (Chrome/WebAPK), iOS/iPadOS (Safari/Home Screen PWA),
+ * and Desktop (Chrome/Edge/macOS/Windows) without hardware lock collisions.
  */
 export async function acquireCameraStream(
   preferredFacingMode: 'user' | 'environment' = 'user'
 ): Promise<MediaStream> {
-  if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error('Browser ini tidak mendukung akses kamera atau halaman tidak dibuka melalui HTTPS.');
-  }
+  const runAcquire = async (): Promise<MediaStream> => {
+    // Always stop any lingering previous camera stream first so Android/iOS/Desktop doesn't hit NotReadableError
+    stopMediaStreamSafely();
+    const elapsedSinceStop = Date.now() - lastStreamStoppedAt;
+    if (lastStreamStoppedAt > 0 && elapsedSinceStop < 220) {
+      await delayMs(220 - elapsedSinceStop);
+    }
 
-  const attempts: MediaStreamConstraints[] = [
-    // Attempt 1: Wide 16:9 HD stream with preferred facing mode (non-1:1, spacious view)
-    {
-      video: {
-        facingMode: { ideal: preferredFacingMode },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
+    const attempts: MediaStreamConstraints[] = [
+      // Attempt 1: Wide 16:9 HD stream with preferred facing mode
+      {
+        video: {
+          facingMode: { ideal: preferredFacingMode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
       },
-      audio: false,
-    },
-    // Attempt 2: Ideal facing mode + light 480p resolution fallback
-    {
-      video: {
-        facingMode: { ideal: preferredFacingMode },
-        width: { ideal: 640 },
-        height: { ideal: 480 },
+      // Attempt 2: Ideal facing mode + light 480p resolution fallback
+      {
+        video: {
+          facingMode: { ideal: preferredFacingMode },
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
       },
-      audio: false,
-    },
-    // Attempt 3: Only ideal facingMode without resolution constraints
-    {
-      video: {
-        facingMode: { ideal: preferredFacingMode },
+      // Attempt 3: Only ideal facingMode without resolution constraints
+      {
+        video: {
+          facingMode: { ideal: preferredFacingMode },
+        },
+        audio: false,
       },
-      audio: false,
-    },
-    // Attempt 4: Universal basic video fallback for older webcams/drivers
-    {
-      video: true,
-      audio: false,
-    },
-  ];
+    ];
 
-  let lastError: any = null;
+    let lastError: any = null;
+    const isPermissionFatal = (err: any) => {
+      const n = err?.name || '';
+      return n === 'NotAllowedError' || n === 'PermissionDeniedError' || n === 'SecurityError';
+    };
 
-  for (const constraints of attempts) {
+    const registerAndReturn = (stream: MediaStream): MediaStream => {
+      currentActiveStream = stream;
+      stream.getVideoTracks().forEach((track) => {
+        track.addEventListener('ended', () => {
+          if (currentActiveStream === stream) {
+            currentActiveStream = null;
+            lastStreamStoppedAt = Date.now();
+          }
+        });
+      });
+      return stream;
+    };
+
+    for (const constraints of attempts) {
+      try {
+        const stream = await requestLegacyOrModernUserMedia(constraints);
+        return registerAndReturn(stream);
+      } catch (err: any) {
+        lastError = err;
+        if (isPermissionFatal(err)) {
+          throw err;
+        }
+      }
+    }
+
+    // Attempt 4: Explicit deviceId fallback (helps on iPad/Android WebAPK/USB webcams where facingMode fails)
     try {
-      return await navigator.mediaDevices.getUserMedia(constraints);
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.enumerateDevices) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const candidateIds = pickPreferredVideoDeviceIds(devices, preferredFacingMode);
+        for (const deviceId of candidateIds) {
+          try {
+            const stream = await requestLegacyOrModernUserMedia({
+              video: { deviceId: { exact: deviceId } },
+              audio: false,
+            });
+            return registerAndReturn(stream);
+          } catch (err: any) {
+            lastError = err;
+            if (isPermissionFatal(err)) {
+              throw err;
+            }
+          }
+        }
+      }
+    } catch (enumErr: any) {
+      if (isPermissionFatal(enumErr)) throw enumErr;
+    }
+
+    // Attempt 5: Universal basic video fallback
+    try {
+      const stream = await requestLegacyOrModernUserMedia({ video: true, audio: false });
+      return registerAndReturn(stream);
     } catch (err: any) {
       lastError = err;
-      const errName = err?.name || '';
-      // If user explicitly denied permission or camera is locked by another app, don't retry
-      if (
-        errName === 'NotAllowedError' ||
-        errName === 'PermissionDeniedError' ||
-        errName === 'NotReadableError' ||
-        errName === 'TrackStartError'
-      ) {
+      if (isPermissionFatal(err)) {
         throw err;
       }
     }
-  }
 
-  throw lastError || new Error('Gagal membuka kamera pada perangkat ini.');
+    // Attempt 6: Transient hardware-release retry after brief cooldown (handles mobile PWA camera daemon delay)
+    const errName = lastError?.name || '';
+    if (errName === 'NotReadableError' || errName === 'TrackStartError' || errName === 'AbortError') {
+      await delayMs(420);
+      for (const retryConstraints of [
+        { video: { facingMode: { ideal: preferredFacingMode } }, audio: false },
+        { video: true, audio: false },
+      ] as MediaStreamConstraints[]) {
+        try {
+          const stream = await requestLegacyOrModernUserMedia(retryConstraints);
+          return registerAndReturn(stream);
+        } catch (retryErr: any) {
+          lastError = retryErr;
+          if (isPermissionFatal(retryErr)) {
+            throw retryErr;
+          }
+        }
+      }
+    }
+
+    throw lastError || new Error('Gagal membuka kamera pada perangkat ini.');
+  };
+
+  const queued = cameraOperationQueue.then(runAcquire, runAcquire);
+  cameraOperationQueue = queued.catch(() => {});
+  return queued;
 }
 
 /**
- * Safely and instantaneously attach a MediaStream to an HTMLVideoElement without blocking UI.
+ * Safely attach a MediaStream to an HTMLVideoElement across iOS standalone PWA, Android WebAPK, and Desktop.
+ * Returns { needsUserTapToPlay } if browser autoplay policy paused playback without a direct tap.
  */
 export async function attachStreamToVideo(
   video: HTMLVideoElement,
   stream: MediaStream
-): Promise<void> {
+): Promise<{ needsUserTapToPlay: boolean }> {
   video.setAttribute('playsinline', 'true');
+  video.setAttribute('webkit-playsinline', 'true');
   video.setAttribute('autoplay', 'true');
+  video.setAttribute('muted', 'true');
   video.playsInline = true;
   video.muted = true;
+  video.defaultMuted = true;
   video.autoplay = true;
-  video.srcObject = stream;
-  void video.play().catch(() => {});
+
+  if (video.srcObject !== stream) {
+    video.srcObject = stream;
+  }
+
+  if (video.readyState < 1 || video.videoWidth === 0) {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        video.removeEventListener('loadedmetadata', done);
+        video.removeEventListener('canplay', done);
+        resolve();
+      };
+      const timer = setTimeout(done, 1000);
+      video.addEventListener('loadedmetadata', done, { once: true });
+      video.addEventListener('canplay', done, { once: true });
+    });
+  }
+
+  try {
+    await video.play();
+    return { needsUserTapToPlay: false };
+  } catch (err: any) {
+    const errName = err?.name || '';
+    if (errName === 'NotAllowedError') {
+      return { needsUserTapToPlay: true };
+    }
+    if (errName === 'AbortError') {
+      await delayMs(60);
+      try {
+        await video.play();
+        return { needsUserTapToPlay: false };
+      } catch (retryErr: any) {
+        return { needsUserTapToPlay: retryErr?.name === 'NotAllowedError' };
+      }
+    }
+    return { needsUserTapToPlay: false };
+  }
+}
+
+/**
+ * Monitors installed-PWA foreground resume (visibilitychange/pageshow) and OS track revocation
+ * so camera streams automatically recover cleanly without staying black/frozen.
+ */
+export function attachCameraResumeListeners(opts: {
+  getStream: () => MediaStream | null;
+  getVideo: () => HTMLVideoElement | null;
+  isCameraExpectedActive: () => boolean;
+  onNeedRestart: () => void;
+}): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return () => {};
+  }
+
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleCheck = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      if (!opts.isCameraExpectedActive()) return;
+      if (document.visibilityState === 'hidden') return;
+
+      const stream = opts.getStream();
+      const video = opts.getVideo();
+      const hasLiveTrack = Boolean(
+        stream && stream.getVideoTracks().some((t) => t.readyState === 'live')
+      );
+
+      if (!hasLiveTrack || (video && video.srcObject === stream && video.ended)) {
+        opts.onNeedRestart();
+        return;
+      }
+
+      if (video && stream && video.srcObject === stream && video.paused) {
+        void video.play().catch(() => {});
+      }
+    }, 260);
+  };
+
+  document.addEventListener('visibilitychange', scheduleCheck);
+  window.addEventListener('pageshow', scheduleCheck);
+  const mediaDevices = navigator.mediaDevices;
+  mediaDevices?.addEventListener?.('devicechange', scheduleCheck);
+
+  return () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    document.removeEventListener('visibilitychange', scheduleCheck);
+    window.removeEventListener('pageshow', scheduleCheck);
+    mediaDevices?.removeEventListener?.('devicechange', scheduleCheck);
+  };
 }
 
 export interface DetectedFaceResult {
@@ -259,7 +520,7 @@ export function findBestFaceMatch(
   return bestMatch;
 }
 
-// Camera error interpreter
+// Camera error interpreter with device- & installed-PWA-specific guidance
 export function parseCameraError(err: any): { title: string; message: string } {
   if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
     return {
@@ -268,8 +529,34 @@ export function parseCameraError(err: any): { title: string; message: string } {
     };
   }
 
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent.toLowerCase() : '';
+  const isIOS = /iphone|ipad|ipod/.test(ua);
+  const isAndroid = /android/.test(ua);
+  const standalone = isStandalonePWA();
   const name = err?.name || '';
-  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+    if (standalone && isIOS) {
+      return {
+        title: 'Izin Kamera Aplikasi Terinstal iOS Ditolak',
+        message:
+          'Buka Pengaturan iPhone/iPad > Safari (atau Aplikasi) > Kamera > pilih "Tanya" atau "Izinkan", lalu buka kembali aplikasi dan ketuk Coba Lagi.',
+      };
+    }
+    if (standalone && isAndroid) {
+      return {
+        title: 'Izin Kamera Aplikasi Terinstal Ditolak',
+        message:
+          'Tekan & tahan ikon aplikasi ini > Info Aplikasi > Izin > Kamera > Izinkan (atau Pengaturan Chrome > Setelan Situs > Kamera), lalu ketuk Coba Lagi.',
+      };
+    }
+    if (standalone) {
+      return {
+        title: 'Izin Kamera Aplikasi Ditolak',
+        message:
+          'Klik tombol menu (⋮) di pojok kanan atas jendela aplikasi terinstal > Info Situs / Izin > ubah Kamera ke "Izinkan", lalu klik Coba Lagi.',
+      };
+    }
     return {
       title: 'Izin Kamera Ditolak',
       message: 'Harap izinkan akses kamera pada ikon gembok/pengaturan browser lalu tekan Coba Lagi.',
@@ -278,13 +565,13 @@ export function parseCameraError(err: any): { title: string; message: string } {
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
     return {
       title: 'Kamera Tidak Ditemukan',
-      message: 'Tidak ada perangkat kamera yang terdeteksi pada perangkat ini.',
+      message: 'Tidak ada perangkat kamera yang terdeteksi atau terhubung pada perangkat ini.',
     };
   }
-  if (name === 'NotReadableError' || name === 'TrackStartError') {
+  if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
     return {
       title: 'Kamera Sedang Digunakan',
-      message: 'Kamera sedang dipakai oleh aplikasi atau tab lain. Tutup aplikasi tersebut dan tekan Coba Lagi.',
+      message: 'Kamera sedang dipakai oleh aplikasi, tab, atau jendela lain. Tutup aplikasi tersebut lalu tekan Coba Lagi.',
     };
   }
   if (name === 'OverconstrainedError') {

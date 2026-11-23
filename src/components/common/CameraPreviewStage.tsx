@@ -25,6 +25,8 @@ interface CameraPreviewStageProps {
   showGuideFrame?: boolean;
   mirrorPreview?: boolean;
   maxHeightClass?: string;
+  needsPlayTap?: boolean;
+  onTapToPlay?: () => void;
   onVideoDimensions?: (width: number, height: number) => void;
   children?: React.ReactNode;
 }
@@ -36,6 +38,8 @@ export const CameraPreviewStage: React.FC<CameraPreviewStageProps> = ({
   showGuideFrame = true,
   mirrorPreview = true,
   maxHeightClass = 'h-[56dvh] min-h-[340px] max-h-[600px] sm:h-[480px] lg:h-[560px]',
+  needsPlayTap = false,
+  onTapToPlay,
   onVideoDimensions,
   children,
 }) => {
@@ -135,6 +139,7 @@ export const CameraPreviewStage: React.FC<CameraPreviewStageProps> = ({
           muted
           onLoadedMetadata={(e) => syncVideoDimensions(e.currentTarget)}
           onLoadedData={(e) => syncVideoDimensions(e.currentTarget)}
+          onCanPlay={(e) => syncVideoDimensions(e.currentTarget)}
           onPlaying={(e) => syncVideoDimensions(e.currentTarget)}
           onResize={(e) => syncVideoDimensions(e.currentTarget)}
           style={{
@@ -170,6 +175,18 @@ export const CameraPreviewStage: React.FC<CameraPreviewStageProps> = ({
             <span className="absolute w-5 h-[1.5px] bg-sky-300/85 rounded-full" />
             <span className="absolute h-5 w-[1.5px] bg-sky-300/85 rounded-full" />
           </div>
+        </div>
+      )}
+
+      {isActive && needsPlayTap && onTapToPlay && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs p-4">
+          <button
+            type="button"
+            onClick={onTapToPlay}
+            className="px-5 py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold shadow-xl cursor-pointer transition"
+          >
+            Ketuk untuk Tampilkan Preview Kamera
+          </button>
         </div>
       )}
 

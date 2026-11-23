@@ -62,6 +62,8 @@ import {
   areFaceModelsLoaded,
   acquireCameraStream,
   attachStreamToVideo,
+  stopMediaStreamSafely,
+  attachCameraResumeListeners,
   detectSingleFaceDescriptor,
   detectFaceDescriptorFromImage,
   parseCameraError,
@@ -1533,10 +1535,14 @@ const FaceDatabaseSection: React.FC<{
 
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [mirrorPreview, setMirrorPreview] = useState<boolean>(true);
+  const [needsPlayTap, setNeedsPlayTap] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const photoUploadRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef<boolean>(true);
+  const cameraExpectedActiveRef = useRef<boolean>(false);
+  const facingModeRef = useRef<'user' | 'environment'>('user');
+  facingModeRef.current = facingMode;
 
   const enrolledPersonIds = new Set(faceTemplates.map(f => f.personId));
 
@@ -1545,53 +1551,73 @@ const FaceDatabaseSection: React.FC<{
     if (!areFaceModelsLoaded()) {
       loadFaceDetectionModels().catch(() => {});
     }
+
+    const detachResumeListeners = attachCameraResumeListeners({
+      getStream: () => streamRef.current,
+      getVideo: () => videoRef.current,
+      isCameraExpectedActive: () => mountedRef.current && cameraExpectedActiveRef.current,
+      onNeedRestart: () => {
+        if (mountedRef.current && cameraExpectedActiveRef.current) {
+          void startCamera(facingModeRef.current);
+        }
+      },
+    });
+
     return () => {
       mountedRef.current = false;
+      detachResumeListeners();
       stopCamera();
     };
   }, []);
 
   const startCamera = async (modeOverride?: 'user' | 'environment') => {
     const targetMode = modeOverride || facingMode;
+    cameraExpectedActiveRef.current = true;
     setMessage(null);
+    setNeedsPlayTap(false);
     setIsCameraActive(true);
     try {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
+        stopMediaStreamSafely(streamRef.current);
         streamRef.current = null;
       }
       if (!areFaceModelsLoaded()) {
         loadFaceDetectionModels().catch(() => {});
       }
       const stream = await acquireCameraStream(targetMode);
-      if (!mountedRef.current) {
-        stream.getTracks().forEach(t => t.stop());
+      if (!mountedRef.current || !cameraExpectedActiveRef.current) {
+        stopMediaStreamSafely(stream);
         return;
       }
       streamRef.current = stream;
       if (videoRef.current) {
-        await attachStreamToVideo(videoRef.current, stream);
-        if (!mountedRef.current) {
-          stream.getTracks().forEach(t => t.stop());
+        const attachRes = await attachStreamToVideo(videoRef.current, stream);
+        if (!mountedRef.current || !cameraExpectedActiveRef.current) {
+          stopMediaStreamSafely(stream);
           return;
         }
+        setNeedsPlayTap(attachRes.needsUserTapToPlay);
       }
       if (!mountedRef.current) return;
       setIsCameraActive(true);
     } catch (e: any) {
       if (!mountedRef.current) return;
+      cameraExpectedActiveRef.current = false;
       setIsCameraActive(false);
+      setNeedsPlayTap(false);
       const parsed = parseCameraError(e);
       setMessage({ type: 'error', text: `${parsed.title}: ${parsed.message}` });
     }
   };
 
   const stopCamera = () => {
+    cameraExpectedActiveRef.current = false;
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
+      stopMediaStreamSafely(streamRef.current);
       streamRef.current = null;
     }
     setIsCameraActive(false);
+    setNeedsPlayTap(false);
   };
 
   const switchCamera = () => {
@@ -1873,6 +1899,10 @@ const FaceDatabaseSection: React.FC<{
                 isActive={isCameraActive}
                 showGuideFrame
                 mirrorPreview={mirrorPreview}
+                needsPlayTap={needsPlayTap}
+                onTapToPlay={() => {
+                  void videoRef.current?.play().then(() => setNeedsPlayTap(false)).catch(() => {});
+                }}
                 maxHeightClass="h-[50dvh] min-h-[340px] max-h-[540px] sm:h-[440px]"
               />
             )}

@@ -61,6 +61,10 @@ function writePersistedConfig(url: string, token: string): void {
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'camera=*, microphone=(), geolocation=*');
+    next();
+  });
 
   app.get('/api/gas-config', (_req, res) => {
     const cfg = readPersistedConfig();

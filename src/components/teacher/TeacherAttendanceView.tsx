@@ -32,6 +32,8 @@ import {
   areFaceModelsLoaded,
   acquireCameraStream,
   attachStreamToVideo,
+  stopMediaStreamSafely,
+  attachCameraResumeListeners,
   detectFacesInVideo,
   detectSingleFaceDescriptor,
   findBestFaceMatch,
@@ -126,6 +128,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   );
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [mirrorPreview, setMirrorPreview] = useState<boolean>(true);
+  const [needsPlayTap, setNeedsPlayTap] = useState<boolean>(false);
   const mirrorPreviewRef = useRef<boolean>(true);
   mirrorPreviewRef.current = mirrorPreview;
   const [cameraError, setCameraError] = useState<{ title: string; message: string } | null>(null);
@@ -144,6 +147,9 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   const isSubmittingRef = useRef<boolean>(false);
   const autoTriggeredSessionRef = useRef<string | null>(null);
   const mountedRef = useRef<boolean>(true);
+  const cameraExpectedActiveRef = useRef<boolean>(true);
+  const facingModeRef = useRef<'user' | 'environment'>('user');
+  facingModeRef.current = facingMode;
 
   const todayStr = serverDate || getWibTodayStr();
   const [history, setHistory] = useState<TeacherAttendance[]>([]);
@@ -367,8 +373,20 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
     void startCamera();
 
+    const detachResumeListeners = attachCameraResumeListeners({
+      getStream: () => streamRef.current,
+      getVideo: () => videoRef.current,
+      isCameraExpectedActive: () => mountedRef.current && cameraExpectedActiveRef.current,
+      onNeedRestart: () => {
+        if (mountedRef.current && cameraExpectedActiveRef.current) {
+          void startCamera(facingModeRef.current);
+        }
+      },
+    });
+
     return () => {
       mountedRef.current = false;
+      detachResumeListeners();
       stopCamera();
     };
   }, []);
@@ -672,7 +690,9 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
   const startCamera = async (modeOverride?: 'user' | 'environment') => {
     const targetMode = modeOverride || facingMode;
+    cameraExpectedActiveRef.current = true;
     setCameraError(null);
+    setNeedsPlayTap(false);
     setIsCameraActive(true);
     setIsRequestingCamera(true);
     autoTriggeredSessionRef.current = null;
@@ -680,7 +700,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
     try {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
+        stopMediaStreamSafely(streamRef.current);
         streamRef.current = null;
       }
 
@@ -694,17 +714,18 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       }
 
       const stream = await acquireCameraStream(targetMode);
-      if (!mountedRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
+      if (!mountedRef.current || !cameraExpectedActiveRef.current) {
+        stopMediaStreamSafely(stream);
         return;
       }
       streamRef.current = stream;
       if (videoRef.current) {
-        await attachStreamToVideo(videoRef.current, stream);
-        if (!mountedRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
+        const attachRes = await attachStreamToVideo(videoRef.current, stream);
+        if (!mountedRef.current || !cameraExpectedActiveRef.current) {
+          stopMediaStreamSafely(stream);
           return;
         }
+        setNeedsPlayTap(attachRes.needsUserTapToPlay);
         if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
           setVideoAspect(videoRef.current.videoWidth / videoRef.current.videoHeight);
         }
@@ -715,15 +736,18 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       startDetectionLoop();
     } catch (err: any) {
       if (!mountedRef.current) return;
+      cameraExpectedActiveRef.current = false;
       setIsCameraActive(false);
       setIsRequestingCamera(false);
+      setNeedsPlayTap(false);
       setCameraError(parseCameraError(err));
     }
   };
 
   const stopCamera = () => {
+    cameraExpectedActiveRef.current = false;
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      stopMediaStreamSafely(streamRef.current);
       streamRef.current = null;
     }
     if (animFrameRef.current) {
@@ -732,6 +756,7 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     }
     setIsCameraActive(false);
     setIsRequestingCamera(false);
+    setNeedsPlayTap(false);
     setMatchedTeacherInFrame(null);
     setHasFaceInFrame(false);
   };
@@ -1027,6 +1052,10 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                   isActive={isCameraActive}
                   showGuideFrame
                   mirrorPreview={mirrorPreview}
+                  needsPlayTap={needsPlayTap}
+                  onTapToPlay={() => {
+                    void videoRef.current?.play().then(() => setNeedsPlayTap(false)).catch(() => {});
+                  }}
                   maxHeightClass="h-[52dvh] min-h-[340px] max-h-[580px] sm:h-[460px] lg:h-[520px]"
                   onVideoDimensions={(w, h) => setVideoAspect(w / h)}
                 >
