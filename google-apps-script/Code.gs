@@ -4502,18 +4502,32 @@ function handleGetTeacherRecap_(ss, params) {
 function handleGetStudentRecap_(ss, params) {
   var classIdFilter = String(params.classId || '');
   var sessionIdFilter = String(params.sessionId || '').trim();
+  var startDate = String(params.startDate || '').trim();
+  var endDate = String(params.endDate || '').trim();
   var classes = readActiveRows_(ss, 'Classes');
   var students = readActiveRows_(ss, 'Students').filter(function (s) {
     var active = s.isActive === true || String(s.isActive).toLowerCase() === 'true' || s.isActive === '';
     return active && (!classIdFilter || String(s.classId) === classIdFilter);
   });
-  var attRows = readAttendanceAcrossSessionSheets_(ss, 'student', sessionIdFilter);
+  var studentIdMap = {};
+  for (var si = 0; si < students.length; si++) {
+    studentIdMap[String(students[si].id)] = true;
+  }
 
+  var attRows = readAttendanceAcrossSessionSheets_(ss, 'student', (sessionIdFilter && sessionIdFilter !== 'ALL') ? sessionIdFilter : '');
+
+  var allRecords = [];
   var attByStudent = {};
   for (var i = 0; i < attRows.length; i++) {
     var a = attRows[i];
-    if (!attByStudent[a.studentId]) attByStudent[a.studentId] = [];
-    attByStudent[a.studentId].push({
+    if (classIdFilter && !studentIdMap[String(a.studentId)] && String(a.classId || '') !== classIdFilter) {
+      continue;
+    }
+    var recDate = String(a.date || '').trim();
+    if (startDate && recDate < startDate) continue;
+    if (endDate && recDate > endDate) continue;
+
+    var formattedRec = {
       id: a.id,
       sessionId: a.sessionId || '',
       sessionName: a.sessionName || '',
@@ -4522,29 +4536,47 @@ function handleGetStudentRecap_(ss, params) {
       studentNis: String(a.nis || ''),
       classId: a.classId || '',
       className: a.className || '',
-      date: String(a.date),
+      date: recDate,
       timeIn: String(a.timeIn || ''),
       status: a.status,
       method: a.method || '',
-      notes: a.notes || ''
-    });
+      notes: a.notes || '',
+      createdAt: a.createdAt || '',
+      updatedAt: a.diubah_pada || '',
+      diubah_pada: a.diubah_pada || '',
+      updatedBy: a.updatedBy || ''
+    };
+
+    allRecords.push(formattedRec);
+    if (!attByStudent[a.studentId]) attByStudent[a.studentId] = [];
+    attByStudent[a.studentId].push(formattedRec);
   }
 
+  allRecords.sort(function (x, y) {
+    var dCmp = String(y.date).localeCompare(String(x.date));
+    if (dCmp !== 0) return dCmp;
+    return String(y.timeIn || '').localeCompare(String(x.timeIn || ''));
+  });
+
   var studentSummaries = students.map(function (s) {
-    var recs = (attByStudent[s.id] || []).sort(function (x, y) { return String(y.date).localeCompare(String(x.date)); });
+    var recs = (attByStudent[s.id] || []).sort(function (x, y) {
+      var dCmp = String(y.date).localeCompare(String(x.date));
+      if (dCmp !== 0) return dCmp;
+      return String(y.timeIn || '').localeCompare(String(x.timeIn || ''));
+    });
     return {
       studentId: s.id,
       studentName: s.name,
       nis: s.nis,
-      recentRecords: recs.slice(0, 30)
+      recentRecords: classIdFilter ? recs : recs.slice(0, 120)
     };
   });
 
   var classSummaries = classes.map(function (c) {
     var clsStudents = students.filter(function (s) { return String(s.classId) === String(c.id); });
     var hadir = 0, terlambat = 0, alpa = 0;
-    for (var si = 0; si < clsStudents.length; si++) {
-      var recs = attByStudent[clsStudents[si].id] || [];
+    for (var ci = 0; ci < clsStudents.length; ci++) {
+      var recs = attByStudent[clsStudents[ci].id] || [];
       for (var ri = 0; ri < recs.length; ri++) {
         if (recs[ri].status === 'Hadir') hadir++;
         else if (recs[ri].status === 'Terlambat') terlambat++;
@@ -4565,6 +4597,9 @@ function handleGetStudentRecap_(ss, params) {
 
   return {
     success: true,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    records: allRecords,
     studentSummaries: studentSummaries,
     classSummaries: classSummaries
   };
