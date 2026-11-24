@@ -29,6 +29,7 @@ export interface LevelConfig {
   qrCodeUrl?: string;
   watermarkUrl?: string;
   schoolAddress?: string;
+  schoolPhone?: string;
   vision: string;
   missions: string[];
   accentColor: string;
@@ -219,6 +220,7 @@ export interface SchoolSettings {
   parentNotificationEnabled: boolean;
   holidays: string[];
   foundationAddress?: string;
+  foundationPhone?: string;
   foundationWebsite?: string;
   foundationWatermarkUrl?: string;
   foundationQrCodeUrl?: string;

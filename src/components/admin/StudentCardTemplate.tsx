@@ -280,6 +280,7 @@ interface StudentCardProps {
   schoolClass?: SchoolClass;
   schoolName: string;
   schoolAddress?: string;
+  schoolPhone?: string;
   schoolLogo?: string;
   foundationWebsite?: string;
   watermarkUrl?: string;
@@ -601,6 +602,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
   student,
   schoolName,
   schoolAddress,
+  schoolPhone,
   schoolLogo,
   foundationWebsite,
   watermarkUrl,
@@ -612,6 +614,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
   const activeLogo = config.logoUrl || schoolLogo;
   const targetWebsite = config.websiteUrl || foundationWebsite || 'https://mambaululum.sch.id';
   const cleanWebsiteUrl = targetWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const activePhone = String(config.schoolPhone || schoolPhone || '(0321) 876543').trim();
 
   const { resolvedSrc: resolvedWatermarkHook } = useResolvedDriveImage(
     resolvedAssetOverrides?.watermark !== undefined ? undefined : activeWatermark
@@ -806,7 +809,7 @@ export const StudentCardBack: React.FC<StudentCardProps> = ({
           <span>Alamat: {fullBackAddress}</span>
         </div>
         <div className="text-right flex-shrink-0 whitespace-nowrap">
-          <span>Web: {cleanWebsiteUrl} • Telp: (0321) 876543</span>
+          <span>Web: {cleanWebsiteUrl}{activePhone ? ` • Telp: ${activePhone}` : ''}</span>
         </div>
       </div>
     </div>

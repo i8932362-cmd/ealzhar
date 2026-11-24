@@ -104,12 +104,37 @@ const defaultSettings: SchoolSettings = {
   parentNotificationEnabled: true,
   holidays: [],
   foundationAddress: 'Jl. Pesantren Mambaul Ulum No. 45, Diwek, Jombang, Jawa Timur 61471',
+  foundationPhone: '(0321) 876543',
   foundationWebsite: 'https://mambaululum.sch.id',
 };
 
 const SYNC_CHANNEL_NAME = 'presensi_mambaul_ulum_gas_sync';
 const SYNC_STORAGE_KEY = 'presensi_gas_sync_signal';
 const SYNC_SNAPSHOT_CACHE_KEY = 'presensi_sync_snapshot_v1';
+const FOUNDATION_PHONE_FALLBACK_KEY = 'presensi_foundation_phone_fallback_v1';
+
+function readFoundationPhoneFallback(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const val = localStorage.getItem(FOUNDATION_PHONE_FALLBACK_KEY);
+    return val !== null ? val : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeFoundationPhoneFallback(phone?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (phone === undefined) {
+      localStorage.removeItem(FOUNDATION_PHONE_FALLBACK_KEY);
+    } else {
+      localStorage.setItem(FOUNDATION_PHONE_FALLBACK_KEY, phone);
+    }
+  } catch {
+    // Ignore
+  }
+}
 
 interface SyncSnapshotCache {
   settings?: SchoolSettings | null;
@@ -355,7 +380,19 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           if (res.hasChanges !== false) {
             const sortedSessions = Array.isArray(res.sessions) ? sortSessions(res.sessions) : undefined;
-            if (res.settings) setSettings(res.settings);
+            const prevSnap = readSyncSnapshotCache();
+            let resolvedSettings = res.settings;
+            if (resolvedSettings) {
+              if (resolvedSettings.foundationPhone !== undefined) {
+                writeFoundationPhoneFallback(undefined);
+              } else {
+                const fallbackPhone = readFoundationPhoneFallback() ?? prevSnap.settings?.foundationPhone;
+                if (fallbackPhone !== undefined) {
+                  resolvedSettings = { ...resolvedSettings, foundationPhone: fallbackPhone };
+                }
+              }
+              setSettings(resolvedSettings);
+            }
             if (sortedSessions) setSessions(sortedSessions);
             if (Array.isArray(res.faceTemplates)) {
               setFaceTemplates(normalizeDescriptors(res.faceTemplates));
@@ -372,9 +409,8 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (Array.isArray(res.auditLogs)) setAuditLogs(res.auditLogs);
             if (Array.isArray(res.followUpNotes)) setFollowUpNotes(res.followUpNotes);
 
-            const prevSnap = readSyncSnapshotCache();
             writeSyncSnapshotCache({
-              settings: res.settings ?? prevSnap.settings,
+              settings: resolvedSettings ?? prevSnap.settings,
               sessions: sortedSessions ?? prevSnap.sessions,
               classes: Array.isArray(res.classes) ? res.classes : prevSnap.classes,
               students: Array.isArray(res.students) ? res.students : prevSnap.students,
@@ -572,7 +608,16 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
         },
       });
       if (res.success && res.data) {
-        setSettings(res.data);
+        let nextSettingsData = res.data;
+        if (nextSettingsData.foundationPhone !== undefined) {
+          writeFoundationPhoneFallback(undefined);
+        } else if (newSettings.foundationPhone !== undefined) {
+          writeFoundationPhoneFallback(newSettings.foundationPhone);
+          nextSettingsData = { ...nextSettingsData, foundationPhone: newSettings.foundationPhone };
+        }
+        setSettings(nextSettingsData);
+        const prevSnap = readSyncSnapshotCache();
+        writeSyncSnapshotCache({ ...prevSnap, settings: nextSettingsData });
         await notifyFaceDatabaseChanged();
         return true;
       }

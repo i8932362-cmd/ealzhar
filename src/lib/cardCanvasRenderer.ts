@@ -22,6 +22,7 @@ export interface RenderCardParams {
   schoolClass?: SchoolClass;
   schoolName: string;
   schoolAddress?: string;
+  schoolPhone?: string;
   foundationWebsite?: string;
   config: LevelConfig;
   assets: CardExportAssets;
@@ -694,9 +695,10 @@ export async function renderStudentCardFrontJpeg(params: RenderCardParams): Prom
 }
 
 export async function renderStudentCardBackJpeg(params: RenderCardParams): Promise<string> {
-  const { schoolName, schoolAddress, foundationWebsite, config, assets } = params;
+  const { schoolName, schoolAddress, schoolPhone, foundationWebsite, config, assets } = params;
   const targetWebsite = config.websiteUrl || foundationWebsite || 'https://mambaululum.sch.id';
   const cleanWebsiteUrl = targetWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const activePhone = String(config.schoolPhone || schoolPhone || '(0321) 876543').trim();
   const fallbackQrUrl = getFallbackQrSvgDataUrl(targetWebsite);
 
   const [logoImg, watermarkImg, rawQrImg] = await Promise.all([
@@ -794,7 +796,7 @@ export async function renderStudentCardBackJpeg(params: RenderCardParams): Promi
   ctx.restore();
 
   // Measure Footer Contact Info FIRST so full Alamat wraps cleanly & Visi/Misi get maximum vertical space
-  const rightFooter = `Web: ${cleanWebsiteUrl} • Telp: (0321) 876543`;
+  const rightFooter = `Web: ${cleanWebsiteUrl}${activePhone ? ` • Telp: ${activePhone}` : ''}`;
   const footAddr = `Alamat: ${config.schoolAddress || schoolAddress || 'Jl. Pesantren Mambaul Ulum, Diwek, Jombang'}`;
   ctx.save();
   ctx.font = `500 6.8px ${FONT_SANS}`;

@@ -20,7 +20,7 @@ var PROP_DRIVE_FOLDER_ID = 'DRIVE_FOLDER_ID';
 var PROP_SECRET_TOKEN = 'SECRET_TOKEN';
 var PROP_DATA_VERSION = 'DATA_VERSION';
 var CACHE_PRESENCE_KEY = 'PRESENSI_ACTIVE_USERS_V1';
-var SCHEMA_BOOT_CACHE_PREFIX = 'SCHEMA_BOOT_V3_';
+var SCHEMA_BOOT_CACHE_PREFIX = 'SCHEMA_BOOT_V4_';
 var DRIVE_BLOB_PREFIX = '__DRIVE_BLOB__:';
 var CACHE_BLOB_PREFIX = 'PRESENSI_BLOB_V1_';
 var CELL_DRIVE_SPILL_THRESHOLD = 4500;
@@ -33,7 +33,7 @@ var SHEET_SCHEMAS = {
     'checkOutTime', 'toiletMaxMinutes', 'toiletBabMinutes', 'toiletBakMinutes',
     'warningThresholdAbsent', 'warningThresholdLate',
     'warningThresholdToilet', 'parentNotificationEnabled', 'holidaysJson',
-    'foundationAddress', 'foundationWebsite', 'foundationWatermarkUrl', 'foundationQrCodeUrl',
+    'foundationAddress', 'foundationPhone', 'foundationWebsite', 'foundationWatermarkUrl', 'foundationQrCodeUrl',
     'levelConfigsJson', 'status', 'diubah_pada', 'updatedBy'
   ],
   Users: [
@@ -979,6 +979,7 @@ var TEXT_FORMAT_COLUMNS = {
   barcodeCard: true,
   parentPhone: true,
   phone: true,
+  foundationPhone: true,
   date: true,
   birthDate: true,
   timeIn: true,
@@ -1144,6 +1145,7 @@ function seedInitialSettings_(sheet) {
     parentNotificationEnabled: true,
     holidaysJson: '[]',
     foundationAddress: 'Jl. Pesantren Mambaul Ulum No. 45, Diwek, Jombang, Jawa Timur 61471',
+    foundationPhone: '(0321) 876543',
     foundationWebsite: 'https://mambaululum.sch.id',
     foundationWatermarkUrl: '',
     foundationQrCodeUrl: '',
@@ -2045,6 +2047,7 @@ function formatSettingsRow_(row) {
     parentNotificationEnabled: String(row.parentNotificationEnabled) === 'true' || row.parentNotificationEnabled === true,
     holidays: holidays,
     foundationAddress: row.foundationAddress || '',
+    foundationPhone: row.foundationPhone !== undefined ? String(row.foundationPhone || '') : '',
     foundationWebsite: row.foundationWebsite || '',
     foundationWatermarkUrl: row.foundationWatermarkUrl || '',
     foundationQrCodeUrl: row.foundationQrCodeUrl || '',
@@ -3378,7 +3381,7 @@ function handleUpdateSettings_(ss, data, actor) {
     'schoolName', 'schoolLogo', 'academicYear', 'checkInTime', 'lateCutoffTime',
     'checkOutTime', 'toiletMaxMinutes', 'toiletBabMinutes', 'toiletBakMinutes',
     'warningThresholdAbsent', 'warningThresholdLate',
-    'warningThresholdToilet', 'parentNotificationEnabled', 'foundationAddress',
+    'warningThresholdToilet', 'parentNotificationEnabled', 'foundationAddress', 'foundationPhone',
     'foundationWebsite', 'foundationWatermarkUrl', 'foundationQrCodeUrl', 'levelConfigsJson'
   ];
   for (var i = 0; i < allowed.length; i++) {

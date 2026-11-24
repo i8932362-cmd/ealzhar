@@ -55,6 +55,7 @@ interface StudentCardManagerProps {
   classes: SchoolClass[];
   schoolName: string;
   schoolAddress?: string;
+  schoolPhone?: string;
   schoolLogo?: string;
   foundationWebsite?: string;
   watermarkUrl?: string;
@@ -231,6 +232,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
   classes,
   schoolName,
   schoolAddress,
+  schoolPhone,
   schoolLogo,
   foundationWebsite,
   watermarkUrl,
@@ -692,6 +694,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             schoolClass: cls,
             schoolName,
             schoolAddress,
+            schoolPhone,
             foundationWebsite,
             config: cfg,
             assets: fullAssets,
@@ -701,6 +704,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             schoolClass: cls,
             schoolName,
             schoolAddress,
+            schoolPhone,
             foundationWebsite,
             config: cfg,
             assets: fullAssets,
@@ -720,6 +724,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
           schoolClass: cls,
           schoolName,
           schoolAddress,
+          schoolPhone,
           foundationWebsite,
           config: cfg,
           assets: fullAssets,
@@ -731,6 +736,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
           schoolClass: cls,
           schoolName,
           schoolAddress,
+          schoolPhone,
           foundationWebsite,
           config: cfg,
           assets: fullAssets,
@@ -813,6 +819,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             schoolClass: cls,
             schoolName,
             schoolAddress,
+            schoolPhone,
             foundationWebsite,
             config: cfg,
             assets: fullAssets,
@@ -822,6 +829,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
             schoolClass: cls,
             schoolName,
             schoolAddress,
+            schoolPhone,
             foundationWebsite,
             config: cfg,
             assets: fullAssets,
@@ -1256,6 +1264,7 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                           schoolClass={cls}
                           schoolName={schoolName}
                           schoolAddress={schoolAddress}
+                          schoolPhone={schoolPhone}
                           schoolLogo={schoolLogo}
                           foundationWebsite={foundationWebsite}
                           watermarkUrl={watermarkUrl}
@@ -1752,6 +1761,27 @@ export const StudentCardManager: React.FC<StudentCardManagerProps> = ({
                       />
                       <span className="text-[10px] text-slate-400 mt-0.5 block">
                         Kode QR di belakang kartu otomatis terbuat mengarah ke URL ini.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                        Telepon Sekolah ({activeConfigTab}, Opsional):
+                      </label>
+                      <input
+                        type="tel"
+                        value={levelConfigs[activeConfigTab].schoolPhone || ''}
+                        placeholder={schoolPhone || '(0321) 876543'}
+                        onChange={e =>
+                          updateLevelConfigs({
+                            ...levelConfigs,
+                            [activeConfigTab]: { ...levelConfigs[activeConfigTab], schoolPhone: e.target.value },
+                          })
+                        }
+                        className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-0.5 block">
+                        Kosongkan agar otomatis mengikuti Telepon Sekolah di Pengaturan Admin.
                       </span>
                     </div>
 

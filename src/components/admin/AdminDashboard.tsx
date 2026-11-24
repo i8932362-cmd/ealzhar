@@ -572,6 +572,19 @@ export const AdminDashboard: React.FC = () => {
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Telepon Sekolah / Yayasan (Otomatis Tampil di Kartu Siswa)
+                </label>
+                <input
+                  type="tel"
+                  value={settingsForm.foundationPhone ?? ''}
+                  onChange={e => updateSettingsField('foundationPhone', e.target.value)}
+                  placeholder="(0321) 876543 / 081234567890"
+                  className="w-full px-4 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
               <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                   Logo Utama Sekolah / Yayasan (Tersimpan di Google Drive)
@@ -909,6 +922,7 @@ export const AdminDashboard: React.FC = () => {
           classes={classes}
           schoolName={settings?.schoolName || 'Yayasan Mambaul Ulum'}
           schoolAddress={settings?.foundationAddress}
+          schoolPhone={settings?.foundationPhone}
           schoolLogo={settings?.schoolLogo}
           foundationWebsite={settings?.foundationWebsite}
           watermarkUrl={settings?.foundationWatermarkUrl}
