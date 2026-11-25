@@ -768,7 +768,7 @@ export const PrincipalDashboard: React.FC = () => {
               { id: 'overview' as PrincipalSubTab, label: 'Ringkasan', icon: <LayoutDashboard className="w-4 h-4" /> },
               { id: 'teacher_recap' as PrincipalSubTab, label: 'Presensi Guru', icon: <Briefcase className="w-4 h-4" /> },
               { id: 'classes_recap' as PrincipalSubTab, label: 'Kelas & Per Kelas', icon: <GraduationCap className="w-4 h-4" /> },
-              { id: 'guest_book' as PrincipalSubTab, label: 'Buku Tamu', icon: <BookOpen className="w-4 h-4" /> },
+              { id: 'guest_book' as PrincipalSubTab, label: 'Riwayat Tamu', icon: <BookOpen className="w-4 h-4" /> },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -2093,8 +2093,8 @@ export const PrincipalDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 4: BUKU TAMU SEKOLAH */}
-      {activeSubTab === 'guest_book' && <GuestBookView />}
+      {/* TAB 4: RIWAYAT TAMU SEKOLAH */}
+      {activeSubTab === 'guest_book' && <GuestBookView showHistory embedded />}
 
       {/* Student Daily Breakdown Modal */}
       {detailStudent && (

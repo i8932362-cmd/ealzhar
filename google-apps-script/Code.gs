@@ -84,7 +84,8 @@ var SHEET_SCHEMAS = {
   ],
   GuestBook: [
     'id', 'date', 'time', 'name', 'address', 'phone', 'purpose',
-    'signatureFileId', 'signatureUrl', 'status', 'createdAt', 'diubah_pada', 'updatedBy'
+    'photoFileId', 'photoUrl', 'signatureFileId', 'signatureUrl',
+    'status', 'createdAt', 'diubah_pada', 'updatedBy'
   ],
   Log: [
     'id', 'waktu', 'pengguna', 'aksi', 'entitas', 'id_entitas', 'detail',
@@ -769,6 +770,7 @@ function ensureDriveFolders_(allowCreateRoot, customFolderName) {
   var cardAssetsFolder = getOrCreateSubfolder_(rootFolder, '04_Logo_TTD_dan_Aset_Kartu');
   var blobDataFolder = getOrCreateSubfolder_(rootFolder, '05_Data_Sistem_Teks');
   var guestSignatureFolder = getOrCreateSubfolder_(rootFolder, '06_Tanda_Tangan_Tamu_Sekolah');
+  var guestPhotoFolder = getOrCreateSubfolder_(rootFolder, '07_Foto_Tamu_Sekolah');
 
   return {
     ok: true,
@@ -779,7 +781,8 @@ function ensureDriveFolders_(allowCreateRoot, customFolderName) {
     cardPhotoFolder: cardPhotoFolder,
     cardAssetsFolder: cardAssetsFolder,
     blobDataFolder: blobDataFolder,
-    guestSignatureFolder: guestSignatureFolder
+    guestSignatureFolder: guestSignatureFolder,
+    guestPhotoFolder: guestPhotoFolder
   };
 }
 
@@ -840,7 +843,8 @@ function provisionDatabaseResources_(payload, actor) {
       '03_Foto_Kartu_Siswa',
       '04_Logo_TTD_dan_Aset_Kartu',
       '05_Data_Sistem_Teks',
-      '06_Tanda_Tangan_Tamu_Sekolah'
+      '06_Tanda_Tangan_Tamu_Sekolah',
+      '07_Foto_Tamu_Sekolah'
     ],
     message:
       'Database Google Sheets ("' + ss.getName() + '") & Folder Drive ("' + driveRes.rootFolder.getName() + '") beserta subfolder aset, wajah & tanda tangan tamu siap digunakan!'
@@ -996,6 +1000,7 @@ var TEXT_FORMAT_COLUMNS = {
   foundationPhone: true,
   date: true,
   time: true,
+  photoFileId: true,
   signatureFileId: true,
   birthDate: true,
   timeIn: true,
@@ -5235,8 +5240,10 @@ function handleGetLogs_(ss, limit) {
 // ============================================================================
 
 function formatGuestBookRow_(gb) {
-  var fileId = String(gb.signatureFileId || '').trim();
-  var sigUrl = fileId ? ('gas-photo://' + fileId) : String(gb.signatureUrl || '');
+  var sigFileId = String(gb.signatureFileId || '').trim();
+  var sigUrl = sigFileId ? ('gas-photo://' + sigFileId) : String(gb.signatureUrl || '');
+  var photoFileId = String(gb.photoFileId || '').trim();
+  var photoUrl = photoFileId ? ('gas-photo://' + photoFileId) : String(gb.photoUrl || '');
   return {
     id: gb.id,
     date: String(gb.date || ''),
@@ -5245,7 +5252,9 @@ function formatGuestBookRow_(gb) {
     address: gb.address || '',
     phone: String(gb.phone || ''),
     purpose: gb.purpose || '',
-    signatureFileId: fileId,
+    photoFileId: photoFileId,
+    photoUrl: photoUrl,
+    signatureFileId: sigFileId,
     signatureUrl: sigUrl,
     createdAt: gb.createdAt || '',
     updatedAt: gb.diubah_pada || '',
@@ -5272,12 +5281,39 @@ function handleGetGuestBook_(ss, params) {
   return { success: true, data: result };
 }
 
+function ensureSheetColumnsExist_(sheet, schemaName, requiredCols) {
+  if (!sheet) return;
+  var lastCol = sheet.getLastColumn();
+  var existingHeaders = lastCol > 0
+    ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h).trim(); })
+    : [];
+  var added = false;
+  for (var i = 0; i < requiredCols.length; i++) {
+    var colName = requiredCols[i];
+    if (existingHeaders.indexOf(colName) === -1) {
+      lastCol++;
+      var cell = sheet.getRange(1, lastCol);
+      cell.setValue(colName);
+      cell.setFontWeight('bold');
+      if (TEXT_FORMAT_COLUMNS[colName]) {
+        sheet.getRange(2, lastCol, Math.max(1, sheet.getMaxRows() - 1), 1).setNumberFormat('@');
+      }
+      existingHeaders.push(colName);
+      added = true;
+    }
+  }
+  if (added) {
+    _EXEC_HEADER_CACHE[schemaName] = existingHeaders.slice();
+  }
+}
+
 function handleSaveGuestEntry_(ss, payload, actor) {
   var name = String(payload.name || '').trim();
   var address = String(payload.address || '').trim();
   var phone = String(payload.phone || '').trim();
   var purpose = String(payload.purpose || '').trim();
   var sigData = String(payload.signatureDataUrl || payload.signatureBase64 || '').trim();
+  var photoData = String(payload.photoDataUrl || payload.photoBase64 || '').trim();
 
   if (!name) {
     return { success: false, mutated: false, error: 'Nama tamu wajib diisi.' };
@@ -5316,10 +5352,40 @@ function handleSaveGuestEntry_(ss, payload, actor) {
     return { success: false, mutated: false, error: 'Tanda tangan digital terlihat kosong. Silakan goreskan tanda tangan terlebih dahulu.' };
   }
 
-  var ext = mimeType.indexOf('jpeg') >= 0 || mimeType.indexOf('jpg') >= 0 ? 'jpg' : 'png';
   var parts = nowWibParts_();
   var newId = generateId_('gst');
   var safeName = sanitizeDriveName_(name) || 'Tamu';
+
+  // Optional Guest Photo upload to 07_Foto_Tamu_Sekolah
+  var photoFileId = '';
+  var photoUrl = '';
+  var photoFileName = '';
+  if (photoData) {
+    var photoMime = 'image/jpeg';
+    var photoBase64 = photoData;
+    var photoMatch = photoData.match(/^data:([^;]+);base64,(.+)$/);
+    if (photoMatch) {
+      photoMime = photoMatch[1];
+      photoBase64 = photoMatch[2];
+    }
+    var photoBytes;
+    try {
+      photoBytes = Utilities.base64Decode(photoBase64);
+    } catch (photoDecodeErr) {
+      return { success: false, mutated: false, error: 'Format foto tamu tidak valid.' };
+    }
+    if (photoBytes && photoBytes.length >= 200) {
+      var photoExt = photoMime.indexOf('png') >= 0 ? 'png' : photoMime.indexOf('webp') >= 0 ? 'webp' : 'jpg';
+      photoFileName = parts.date + ' - ' + safeName + ' - FOTO_' + String(Date.now()).slice(-4) + '.' + photoExt;
+      var targetPhotoFolder = driveRes.guestPhotoFolder || driveRes.guestSignatureFolder;
+      var photoBlob = Utilities.newBlob(photoBytes, photoMime, photoFileName);
+      var photoDriveFile = targetPhotoFolder.createFile(photoBlob);
+      photoFileId = photoDriveFile.getId();
+      photoUrl = 'gas-photo://' + photoFileId;
+    }
+  }
+
+  var ext = mimeType.indexOf('jpeg') >= 0 || mimeType.indexOf('jpg') >= 0 ? 'jpg' : 'png';
   var fileName = parts.date + ' - ' + safeName + ' - TTD_' + String(Date.now()).slice(-4) + '.' + ext;
 
   var blob = Utilities.newBlob(bytes, mimeType, fileName);
@@ -5331,6 +5397,8 @@ function handleSaveGuestEntry_(ss, payload, actor) {
   if (!sheet) {
     ensureAllSheets_(ss, true);
     sheet = ss.getSheetByName('GuestBook');
+  } else {
+    ensureSheetColumnsExist_(sheet, 'GuestBook', SHEET_SCHEMAS.GuestBook);
   }
 
   var entryObj = {
@@ -5341,6 +5409,8 @@ function handleSaveGuestEntry_(ss, payload, actor) {
     address: address,
     phone: phone,
     purpose: purpose,
+    photoFileId: photoFileId,
+    photoUrl: photoUrl,
     signatureFileId: fileId,
     signatureUrl: sigUrl,
     status: 'aktif',
@@ -5356,7 +5426,8 @@ function handleSaveGuestEntry_(ss, payload, actor) {
     'CREATE',
     'GuestBook',
     newId,
-    'Catat tamu "' + name + '" (' + phone + ') + TTD Drive "' + driveRes.guestSignatureFolder.getName() + '/' + fileName + '"'
+    'Catat tamu "' + name + '" (' + phone + ') + TTD Drive "' + driveRes.guestSignatureFolder.getName() + '/' + fileName + '"' +
+      (photoFileId ? ' + Foto Drive "07_Foto_Tamu_Sekolah/' + photoFileName + '"' : '')
   );
 
   return {
@@ -5364,6 +5435,6 @@ function handleSaveGuestEntry_(ss, payload, actor) {
     mutated: true,
     id: newId,
     data: formatGuestBookRow_(entryObj),
-    message: 'Buku tamu & tanda tangan digital berhasil disimpan ke Google Sheets & Google Drive.'
+    message: 'Data tamu' + (photoFileId ? ', foto,' : '') + ' & tanda tangan digital berhasil disimpan ke Google Sheets & Google Drive.'
   };
 }

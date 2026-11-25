@@ -295,6 +295,8 @@ export interface GuestBookEntry {
   address: string;
   phone: string;
   purpose?: string;
+  photoFileId?: string;
+  photoUrl?: string;
   signatureFileId?: string;
   signatureUrl?: string;
   createdAt: string;

@@ -240,7 +240,7 @@ function MainApp() {
           )}
 
           {activeTab === 'guest' && (
-            <GuestBookView onReturnToPortal={() => setActiveTab('portal')} />
+            <GuestBookView onReturnToPortal={() => setActiveTab('portal')} showHistory={false} />
           )}
 
           {activeTab === 'homeroom' && (

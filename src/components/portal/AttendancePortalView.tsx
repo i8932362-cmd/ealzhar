@@ -321,7 +321,7 @@ export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
                   Tamu Sekolah
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-                  Pencatatan identitas tamu sekolah (nama, alamat, no. HP) lengkap dengan tanda tangan digital tersimpan ke Sheets &amp; Drive.
+                  Pencatatan identitas tamu sekolah (nama, alamat, no. HP), upload foto, dan tanda tangan digital tersimpan ke Sheets &amp; Drive.
                 </p>
               </div>
 
@@ -331,12 +331,12 @@ export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
                   <span>Nama, Alamat, No. HP &amp; Keperluan Tamu</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <PenTool className="w-4 h-4 text-teal-600 flex-shrink-0" />
-                  <span>Tanda Tangan Digital Sentuh / Mouse</span>
+                  <Camera className="w-4 h-4 text-teal-600 flex-shrink-0" />
+                  <span>Upload Foto Tamu / Ambil Kamera Langsung</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <FileSpreadsheet className="w-4 h-4 text-teal-600 flex-shrink-0" />
-                  <span>Arsip Otomatis Sheets &amp; Google Drive</span>
+                  <PenTool className="w-4 h-4 text-teal-600 flex-shrink-0" />
+                  <span>Tanda Tangan Digital Sentuh / Mouse</span>
                 </div>
               </div>
             </div>

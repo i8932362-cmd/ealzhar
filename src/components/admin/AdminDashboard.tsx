@@ -26,6 +26,7 @@ import {
   Layers,
   Loader2,
   X,
+  BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
@@ -116,6 +117,7 @@ function inferEducationLevel(rawLevel?: string, grade?: string | number, classNa
 }
 import { PasswordInput } from '../common/PasswordInput.tsx';
 import { StudentCardManager } from './StudentCardManager.tsx';
+import { GuestBookView } from '../guest/GuestBookView.tsx';
 
 export const AdminDashboard: React.FC = () => {
   const { user } = useAuth();
@@ -142,7 +144,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Tabs
   const [activeTab, setActiveTab] = useState<
-    'settings' | 'users' | 'face_db' | 'locations' | 'classes' | 'students' | 'bulk_upload' | 'id_cards' | 'teacher_recap' | 'audit_log'
+    'settings' | 'users' | 'face_db' | 'locations' | 'classes' | 'students' | 'bulk_upload' | 'id_cards' | 'teacher_recap' | 'guest_book' | 'audit_log'
   >('settings');
   const [pendingFaceTarget, setPendingFaceTarget] = useState<{
     personType: 'student' | 'teacher';
@@ -473,6 +475,7 @@ export const AdminDashboard: React.FC = () => {
           { id: 'bulk_upload', label: 'Upload Massal', icon: <Upload className="w-4 h-4" /> },
           { id: 'id_cards', label: 'Cetak Kartu Siswa', icon: <QrCode className="w-4 h-4" /> },
           { id: 'teacher_recap', label: 'Rekap Presensi Guru', icon: <Briefcase className="w-4 h-4" /> },
+          { id: 'guest_book', label: 'Riwayat Tamu', icon: <BookOpen className="w-4 h-4" /> },
           { id: 'audit_log', label: 'Sheet Log', icon: <Shield className="w-4 h-4" /> },
         ].map(item => (
           <button
@@ -958,7 +961,10 @@ export const AdminDashboard: React.FC = () => {
         <TeacherRecapSection serverVersion={serverVersion} teachers={teachers} sessions={sessions} />
       )}
 
-      {/* Tab 10: Sheet Log */}
+      {/* Tab 10: Riwayat Tamu Sekolah */}
+      {activeTab === 'guest_book' && <GuestBookView showHistory embedded />}
+
+      {/* Tab 11: Sheet Log */}
       {activeTab === 'audit_log' && (
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
