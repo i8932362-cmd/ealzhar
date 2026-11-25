@@ -1178,9 +1178,11 @@ function seedInitialSchoolData_(ss) {
   }
 
   var defaultTeachers = [
+    { id: 'tch-kepsek', nip: '197805122005011003', name: 'Kepala Sekolah Mambaul Ulum', email: 'kepsek@mambaululum.sch.id', phone: '', subject: 'Kepala Sekolah', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
     { id: 'tch-1', nip: '199005152015011004', name: 'Ahmad Fauzan, M.Kom', email: 'fauzan@mambaululum.sch.id', phone: '081234567801', subject: 'Informatika & Koding', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
     { id: 'tch-2', nip: '198501012010011001', name: 'Ust. Budi Santoso, S.Pd', email: 'budi@mambaululum.sch.id', phone: '081234567802', subject: 'Pendidikan Agama Islam', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
-    { id: 'tch-3', nip: '198702022012012002', name: 'Ustadzah Siti Rahmah, M.Pd', email: 'bk@mambaululum.sch.id', phone: '081234567803', subject: 'Bimbingan Konseling', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' }
+    { id: 'tch-3', nip: '198702022012012002', name: 'Ustadzah Siti Rahmah, M.Pd', email: 'bk@mambaululum.sch.id', phone: '081234567803', subject: 'Bimbingan Konseling', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' },
+    { id: 'tch-kes1', nip: '198803032014011003', name: 'Bagian Kesiswaan', email: 'kesiswaan@mambaululum.sch.id', phone: '', subject: 'Kesiswaan', isActive: true, status: 'aktif', createdAt: now, diubah_pada: now, updatedBy: 'system' }
   ];
   for (var t = 0; t < defaultTeachers.length; t++) {
     appendObjectRow_(teachersSheet, 'Teachers', defaultTeachers[t]);
@@ -2277,11 +2279,49 @@ function handleSync_(ss, params) {
     return y.exceededCount - x.exceededCount;
   }).slice(0, 20);
 
-  var users = readActiveRows_(ss, 'Users')
+  var rawUsersRows = readActiveRows_(ss, 'Users')
     .filter(function (u) {
       return String(u.role || '').toLowerCase() !== 'superadmin' &&
         String(u.username || '').toLowerCase() !== 'superadmin';
-    })
+    });
+
+  // Ensure every active Kepala Sekolah, Guru, Wali Kelas, BK, Kesiswaan, Admin user also appears in teachers roster if unsynced
+  for (var ru = 0; ru < rawUsersRows.length; ru++) {
+    var uRow = rawUsersRows[ru];
+    if (!isTeacherRosterEligibleRole_(uRow.role)) continue;
+    var uNipStr = String(uRow.nip || '').trim();
+    var uEmailStr = String(uRow.email || '').trim().toLowerCase();
+    var uNameStr = String(uRow.name || '').trim().toLowerCase();
+    var matchedInTeachers = false;
+    for (var tsIdx = 0; tsIdx < teachers.length; tsIdx++) {
+      var tsItem = teachers[tsIdx];
+      if ((uNipStr && String(tsItem.nip || '').trim() === uNipStr) ||
+          (uEmailStr && String(tsItem.email || '').trim().toLowerCase() === uEmailStr) ||
+          (uNameStr && String(tsItem.name || '').trim().toLowerCase() === uNameStr)) {
+        matchedInTeachers = true;
+        break;
+      }
+    }
+    if (!matchedInTeachers) {
+      var uActive = uRow.isActive === true || String(uRow.isActive).toLowerCase() === 'true' || uRow.isActive === '';
+      teachers.push({
+        id: String(uRow.id),
+        nip: uNipStr,
+        name: uRow.name || uRow.username || '',
+        email: uRow.email || '',
+        phone: '',
+        subject: defaultTeacherSubjectForRole_(uRow.role),
+        isActive: uActive,
+        hasFaceEnrolled: !!enrolledSet[String(uRow.id)],
+        createdAt: uRow.createdAt || '',
+        updatedAt: uRow.diubah_pada || '',
+        diubah_pada: uRow.diubah_pada || '',
+        updatedBy: uRow.updatedBy || ''
+      });
+    }
+  }
+
+  var users = rawUsersRows
     .map(function (u) {
       return {
         id: u.id,
@@ -2363,14 +2403,28 @@ function handleSync_(ss, params) {
 // AUTH HANDLERS
 // ============================================================================
 
-function resolveTeacherProfileForUser_(ss, u) {
-  if (!u) return null;
-  var teachers = readActiveRows_(ss, 'Teachers');
-  var uNip = String(u.nip || '').trim();
-  var uEmail = String(u.email || '').trim().toLowerCase();
-  var uName = String(u.name || '').trim().toLowerCase();
-  for (var i = 0; i < teachers.length; i++) {
-    var t = teachers[i];
+function isTeacherRosterEligibleRole_(role) {
+  var r = String(role || '').trim().toLowerCase();
+  return r === 'guru' || r === 'wali_kelas' || r === 'bk' || r === 'kesiswaan' || r === 'kepala_sekolah' || r === 'admin';
+}
+
+function defaultTeacherSubjectForRole_(role) {
+  var r = String(role || '').trim().toLowerCase();
+  if (r === 'kepala_sekolah') return 'Kepala Sekolah';
+  if (r === 'admin') return 'Administrator';
+  if (r === 'wali_kelas') return 'Wali Kelas';
+  if (r === 'bk') return 'Bimbingan Konseling';
+  if (r === 'kesiswaan') return 'Kesiswaan';
+  return 'Guru';
+}
+
+function findMatchingTeacherRow_(teachersList, candidate) {
+  if (!candidate) return null;
+  var uNip = String(candidate.nip || '').trim();
+  var uEmail = String(candidate.email || '').trim().toLowerCase();
+  var uName = String(candidate.name || '').trim().toLowerCase();
+  for (var i = 0; i < teachersList.length; i++) {
+    var t = teachersList[i];
     if (
       (uNip && String(t.nip || '').trim() === uNip) ||
       (uEmail && String(t.email || '').trim().toLowerCase() === uEmail) ||
@@ -2380,6 +2434,72 @@ function resolveTeacherProfileForUser_(ss, u) {
     }
   }
   return null;
+}
+
+function syncUserToTeacherRecord_(ss, userObj, subjectOverride, actor, prevUserObj) {
+  if (!userObj || !isTeacherRosterEligibleRole_(userObj.role)) return null;
+  var teachersSheet = ss.getSheetByName('Teachers');
+  if (!teachersSheet) return null;
+
+  var existingTeachers = readActiveRows_(ss, 'Teachers');
+  var matched = findMatchingTeacherRow_(existingTeachers, prevUserObj || userObj) ||
+                findMatchingTeacherRow_(existingTeachers, userObj);
+
+  var uNip = String(userObj.nip || '').trim();
+  var uName = String(userObj.name || userObj.username || '').trim();
+  var uEmail = String(userObj.email || '').trim();
+  var uActive = userObj.isActive === undefined ? true : (userObj.isActive === true || String(userObj.isActive).toLowerCase() === 'true');
+  var fallbackSubj = defaultTeacherSubjectForRole_(userObj.role);
+  var parts = nowWibParts_();
+
+  if (matched) {
+    var patchObj = { updatedBy: actor };
+    if (uName && String(matched.name || '') !== uName) patchObj.name = uName;
+    if (String(matched.nip || '') !== uNip) patchObj.nip = uNip;
+    if (String(matched.email || '') !== uEmail) patchObj.email = uEmail;
+    var curTActive = matched.isActive === true || String(matched.isActive).toLowerCase() === 'true' || matched.isActive === '';
+    if (curTActive !== uActive) patchObj.isActive = uActive;
+    if (subjectOverride && String(subjectOverride).trim()) {
+      patchObj.subject = String(subjectOverride).trim();
+    } else if (!String(matched.subject || '').trim()) {
+      patchObj.subject = fallbackSubj;
+    }
+    if (Object.keys(patchObj).length > 1) {
+      updateRowCellsById_(teachersSheet, 'Teachers', matched.id, patchObj, null);
+    }
+    return {
+      id: matched.id,
+      nip: uNip,
+      name: uName || matched.name,
+      email: uEmail,
+      phone: String(matched.phone || ''),
+      subject: patchObj.subject || matched.subject || fallbackSubj,
+      isActive: uActive
+    };
+  }
+
+  var tchId = generateId_('tch');
+  var newTeacherRow = {
+    id: tchId,
+    nip: uNip,
+    name: uName,
+    email: uEmail,
+    phone: '',
+    subject: (subjectOverride && String(subjectOverride).trim()) ? String(subjectOverride).trim() : fallbackSubj,
+    isActive: uActive,
+    status: 'aktif',
+    createdAt: parts.iso,
+    diubah_pada: parts.iso,
+    updatedBy: actor
+  };
+  appendObjectRow_(teachersSheet, 'Teachers', newTeacherRow);
+  return newTeacherRow;
+}
+
+function resolveTeacherProfileForUser_(ss, u) {
+  if (!u) return null;
+  var teachers = readActiveRows_(ss, 'Teachers');
+  return findMatchingTeacherRow_(teachers, u);
 }
 
 function handleLogin_(ss, payload) {
@@ -3585,45 +3705,22 @@ function handleCreateGeneric_(ss, entity, data, actor) {
   }
   writeAuditLog_(ss, actor, 'CREATE', entity, newId, entity === 'Sessions' ? ('Buat sesi "' + obj.name + '" (' + obj.targetType + ') -> Sheet ' + obj.sheetName) : ('Tambah data baru pada ' + entity));
 
-  // Auto-sync teacher profile when Admin creates a Guru / Wali Kelas / BK / Kesiswaan user
+  // Auto-sync teacher/staff profile when Admin creates ANY Guru / Wali Kelas / BK / Kesiswaan / Kepala Sekolah / Admin user
+  var syncedTeacherObj = null;
   if (entity === 'Users') {
-    var roleStr = String(obj.role || '').toLowerCase();
-    if (roleStr === 'guru' || roleStr === 'wali_kelas' || roleStr === 'bk' || roleStr === 'kesiswaan') {
-      var teachersSheet = ss.getSheetByName('Teachers');
-      var existingTeachers = readActiveRows_(ss, 'Teachers');
-      var uNip = String(obj.nip || '').trim();
-      var uEmail = String(obj.email || '').trim().toLowerCase();
-      var uName = String(obj.name || '').trim().toLowerCase();
-      var alreadyTeacher = false;
-      for (var et = 0; et < existingTeachers.length; et++) {
-        var rowT = existingTeachers[et];
-        if ((uNip && String(rowT.nip || '').trim() === uNip) ||
-            (uEmail && String(rowT.email || '').trim().toLowerCase() === uEmail) ||
-            (uName && String(rowT.name || '').trim().toLowerCase() === uName)) {
-          alreadyTeacher = true;
-          break;
-        }
-      }
-      if (!alreadyTeacher && teachersSheet) {
-        var tchId = generateId_('tch');
-        appendObjectRow_(teachersSheet, 'Teachers', {
-          id: tchId,
-          nip: uNip,
-          name: obj.name || obj.username,
-          email: obj.email || '',
-          phone: '',
-          subject: subjectInput || (roleStr === 'bk' ? 'Bimbingan Konseling' : roleStr === 'kesiswaan' ? 'Kesiswaan' : 'Guru'),
-          isActive: obj.isActive,
-          status: 'aktif',
-          createdAt: parts.iso,
-          diubah_pada: parts.iso,
-          updatedBy: actor
-        });
-      }
-    }
+    syncedTeacherObj = syncUserToTeacherRecord_(ss, obj, subjectInput, actor, null);
   }
 
-  return { success: true, id: newId, data: obj, autoCreatedClass: autoCreatedClassObj, message: 'Data berhasil ditambahkan.' };
+  return {
+    success: true,
+    id: newId,
+    data: obj,
+    syncedTeacher: syncedTeacherObj,
+    autoCreatedClass: autoCreatedClassObj,
+    message: syncedTeacherObj
+      ? 'Data berhasil ditambahkan & langsung tersinkron ke Database Wajah.'
+      : 'Data berhasil ditambahkan.'
+  };
 }
 
 function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
@@ -3692,10 +3789,13 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
     };
   }
 
+  var prevUserForTeacherSync = null;
+  var userSubjectOverride = '';
   if (entity === 'Users') {
     var curUsersCheck = readActiveRows_(ss, 'Users');
     for (var ui = 0; ui < curUsersCheck.length; ui++) {
       if (String(curUsersCheck[ui].id) === String(id)) {
+        prevUserForTeacherSync = curUsersCheck[ui];
         if (String(curUsersCheck[ui].role || '').toLowerCase() === 'superadmin' ||
             String(curUsersCheck[ui].username || '').toLowerCase() === 'superadmin') {
           return { success: false, mutated: false, error: 'Akun Superadmin dilindungi dan tidak dapat diubah oleh Admin.' };
@@ -3729,6 +3829,9 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
         patch.passwordHash = hashPassword_(plainPwd);
       }
       delete patch.password;
+    }
+    if (patch.hasOwnProperty('subject')) {
+      userSubjectOverride = String(patch.subject || '').trim();
     }
     delete patch.subject;
   }
@@ -3836,6 +3939,18 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
   if (updatedSessionSheetTarget) {
     ensureSessionSheet_(ss, updatedSessionSheetTarget);
   }
+  if (entity === 'Users' && prevUserForTeacherSync) {
+    var mergedUserForSync = {
+      id: id,
+      username: patch.hasOwnProperty('username') ? patch.username : prevUserForTeacherSync.username,
+      name: patch.hasOwnProperty('name') ? patch.name : prevUserForTeacherSync.name,
+      role: patch.hasOwnProperty('role') ? patch.role : prevUserForTeacherSync.role,
+      email: patch.hasOwnProperty('email') ? patch.email : prevUserForTeacherSync.email,
+      nip: patch.hasOwnProperty('nip') ? patch.nip : prevUserForTeacherSync.nip,
+      isActive: patch.hasOwnProperty('isActive') ? patch.isActive : prevUserForTeacherSync.isActive
+    };
+    syncUserToTeacherRecord_(ss, mergedUserForSync, userSubjectOverride, actor, prevUserForTeacherSync);
+  }
   if (entity === 'Students') {
     syncSingleStudentInLevelSheets_(ss, id, false);
   } else if (entity === 'Classes') {
@@ -3939,6 +4054,16 @@ function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
     totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'student');
   } else if (entity === 'Teachers') {
     totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'teacher');
+  } else if (entity === 'Users') {
+    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'teacher');
+    var matchedTchOnDelete = findMatchingTeacherRow_(readActiveRows_(ss, 'Teachers'), rowMap);
+    if (matchedTchOnDelete) {
+      totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, matchedTchOnDelete.id, 'teacher');
+      var tchSheetDel = ss.getSheetByName('Teachers');
+      if (tchSheetDel) {
+        softDeleteRowById_(tchSheetDel, 'Teachers', matchedTchOnDelete.id, null, actor);
+      }
+    }
   } else if (entity === 'FaceTemplates') {
     var fPid = String(rowMap.personId || '').trim();
     var fPtype = String(rowMap.personType || 'student');

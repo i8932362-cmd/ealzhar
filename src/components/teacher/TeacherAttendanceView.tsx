@@ -186,9 +186,13 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   }, [faceTemplates]);
 
   const myFaceTemplate = useMemo(() => {
-    if (!myTeacher) return undefined;
-    return teacherFaceTemplates.find((f) => f.personId === myTeacher.id);
-  }, [teacherFaceTemplates, myTeacher]);
+    const candidateIds = new Set<string>();
+    if (myTeacher?.id) candidateIds.add(myTeacher.id);
+    if (user?.teacherId) candidateIds.add(user.teacherId);
+    if (user?.id) candidateIds.add(user.id);
+    if (candidateIds.size === 0) return undefined;
+    return teacherFaceTemplates.find((f) => candidateIds.has(f.personId));
+  }, [teacherFaceTemplates, myTeacher, user]);
 
   const [showPermitModal, setShowPermitModal] = useState<boolean>(false);
   const [permitType, setPermitType] = useState<'Izin' | 'Sakit'>('Izin');

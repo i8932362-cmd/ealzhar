@@ -137,6 +137,10 @@ export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<
     'settings' | 'users' | 'face_db' | 'locations' | 'classes' | 'students' | 'bulk_upload' | 'id_cards' | 'teacher_recap' | 'audit_log'
   >('settings');
+  const [pendingFaceTarget, setPendingFaceTarget] = useState<{
+    personType: 'student' | 'teacher';
+    personId: string;
+  } | null>(null);
 
   // Settings form
   const [settingsForm, setSettingsForm] = useState<Partial<SchoolSettings>>({});
@@ -844,10 +848,16 @@ export const AdminDashboard: React.FC = () => {
       {activeTab === 'users' && (
         <UserManagementSection
           users={usersList}
+          teachers={teachers}
+          faceTemplates={faceTemplates}
           classes={classes}
           activeUsers={activeUsers}
           currentUserId={user?.id}
           onRefresh={handleDataMutated}
+          onJumpToFaceEnroll={(target) => {
+            setPendingFaceTarget(target);
+            setActiveTab('face_db');
+          }}
           onSavedToast={triggerSavedToast}
           onDeletedToast={triggerDeletedToast}
           onErrorToast={triggerErrorToast}
@@ -860,7 +870,10 @@ export const AdminDashboard: React.FC = () => {
           students={students}
           classes={classes}
           teachers={teachers}
+          users={usersList}
           faceTemplates={faceTemplates}
+          initialSelection={pendingFaceTarget}
+          onClearInitialSelection={() => setPendingFaceTarget(null)}
           onRefresh={handleDataMutated}
           onSavedToast={triggerSavedToast}
           onDeletedToast={triggerDeletedToast}
@@ -1519,12 +1532,72 @@ const SessionManagementCard: React.FC<{
   );
 };
 
+function defaultSubjectLabelForRole(role: string): string {
+  switch (String(role || '').toLowerCase()) {
+    case 'kepala_sekolah':
+      return 'Kepala Sekolah';
+    case 'admin':
+      return 'Administrator / Staf';
+    case 'wali_kelas':
+      return 'Wali Kelas';
+    case 'bk':
+      return 'Guru BK';
+    case 'kesiswaan':
+      return 'Staf Kesiswaan';
+    case 'guru':
+      return 'Guru Mapel';
+    default:
+      return 'Guru / Staf';
+  }
+}
+
+function formatRoleDisplayLabel(role: string): string {
+  switch (String(role || '').toLowerCase()) {
+    case 'kepala_sekolah':
+      return 'Kepala Sekolah';
+    case 'wali_kelas':
+      return 'Wali Kelas';
+    case 'bk':
+      return 'Guru BK';
+    case 'kesiswaan':
+      return 'Staf Kesiswaan';
+    case 'guru':
+      return 'Guru';
+    case 'admin':
+      return 'Admin';
+    default:
+      return role || 'Staf';
+  }
+}
+
+function findMatchingTeacherForUser(u: any, teachersList: Teacher[]): Teacher | undefined {
+  if (!u) return undefined;
+  const userTeacherId = String(u.teacherId || '').trim();
+  const userNip = String(u.nip || '').trim();
+  const userEmail = String(u.email || '').trim().toLowerCase();
+  const userName = String(u.name || '').trim().toLowerCase();
+
+  return teachersList.find((t) => {
+    if (userTeacherId && t.id === userTeacherId) return true;
+    const tNip = String(t.nip || '').trim();
+    const tEmail = String(t.email || '').trim().toLowerCase();
+    const tName = String(t.name || '').trim().toLowerCase();
+    if (userNip && tNip && tNip === userNip) return true;
+    if (userEmail && tEmail && tEmail === userEmail) return true;
+    if (userName && tName && tName === userName) return true;
+    return false;
+  });
+}
+
 // Face Database Enrollment
 const FaceDatabaseSection: React.FC<{
   students: Student[];
   classes: SchoolClass[];
   teachers: Teacher[];
+  users: any[];
   faceTemplates: FaceTemplate[];
+  initialSelection?: { personType: 'student' | 'teacher'; personId: string } | null;
+  onClearInitialSelection?: () => void;
   onRefresh: () => Promise<void> | void;
   onSavedToast?: (msg: string) => void;
   onDeletedToast?: (msg: string) => void;
@@ -1533,14 +1606,21 @@ const FaceDatabaseSection: React.FC<{
   students,
   classes,
   teachers,
+  users,
   faceTemplates,
+  initialSelection,
+  onClearInitialSelection,
   onRefresh,
   onSavedToast,
   onDeletedToast,
   onErrorToast,
 }) => {
-  const [selectedPersonType, setSelectedPersonType] = useState<'student' | 'teacher'>('student');
-  const [selectedPersonId, setSelectedPersonId] = useState<string>('');
+  const [selectedPersonType, setSelectedPersonType] = useState<'student' | 'teacher'>(
+    initialSelection?.personType || 'student'
+  );
+  const [selectedPersonId, setSelectedPersonId] = useState<string>(
+    initialSelection?.personId || ''
+  );
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
   const [isRequestingCamera, setIsRequestingCamera] = useState<boolean>(true);
   const [cameraError, setCameraError] = useState<{ title: string; message: string } | null>(null);
@@ -1561,7 +1641,94 @@ const FaceDatabaseSection: React.FC<{
   const facingModeRef = useRef<'user' | 'environment'>('user');
   facingModeRef.current = facingMode;
 
-  const enrolledPersonIds = new Set(faceTemplates.map(f => f.personId));
+  useEffect(() => {
+    if (initialSelection?.personId) {
+      setSelectedPersonType(initialSelection.personType);
+      setSelectedPersonId(initialSelection.personId);
+      setMessage(null);
+      onClearInitialSelection?.();
+    }
+  }, [initialSelection, onClearInitialSelection]);
+
+  const enrolledPersonIds = useMemo(
+    () => new Set(faceTemplates.map((f) => f.personId)),
+    [faceTemplates]
+  );
+
+  // Gabungkan data Teachers dan seluruh akun pengguna aktif (Guru, Kepsek, Wali Kelas, BK, Kesiswaan, Admin)
+  // agar pengguna yang baru ditambah atau pengguna lama langsung muncul & siap direkam wajahnya.
+  const teacherStaffList = useMemo(() => {
+    const activeNonSuperadminUsers = (users || []).filter(
+      (u) =>
+        u &&
+        u.isActive !== false &&
+        String(u.role || '').toLowerCase() !== 'superadmin' &&
+        String(u.username || '').toLowerCase() !== 'superadmin'
+    );
+
+    const list: Array<
+      Teacher & { role?: string; linkedUserId?: string; isVirtualUserOnly?: boolean }
+    > = teachers
+      .filter((t) => t.isActive !== false)
+      .map((t) => {
+        const matchedUser = activeNonSuperadminUsers.find((u) => {
+          const uTchId = String(u.teacherId || '').trim();
+          const uNip = String(u.nip || '').trim();
+          const uEmail = String(u.email || '').trim().toLowerCase();
+          const uName = String(u.name || '').trim().toLowerCase();
+          const tNip = String(t.nip || '').trim();
+          const tEmail = String(t.email || '').trim().toLowerCase();
+          const tName = String(t.name || '').trim().toLowerCase();
+          return (
+            (uTchId && uTchId === t.id) ||
+            (uNip && tNip && uNip === tNip) ||
+            (uEmail && tEmail && uEmail === tEmail) ||
+            (uName && tName && uName === tName)
+          );
+        });
+        return {
+          ...t,
+          role: matchedUser?.role,
+          linkedUserId: matchedUser?.id,
+          isVirtualUserOnly: false,
+        };
+      });
+
+    for (const u of activeNonSuperadminUsers) {
+      const existing = findMatchingTeacherForUser(u, teachers);
+      if (!existing) {
+        list.push({
+          id: u.id,
+          nip: u.nip || '-',
+          name: u.name,
+          email: u.email || '',
+          phone: '',
+          subject: u.subject || defaultSubjectLabelForRole(u.role),
+          isActive: true,
+          createdAt: u.createdAt || '',
+          updatedAt: u.updatedAt || '',
+          updatedBy: u.updatedBy || 'SYSTEM',
+          role: u.role,
+          linkedUserId: u.id,
+          isVirtualUserOnly: true,
+        });
+      }
+    }
+
+    return list;
+  }, [teachers, users]);
+
+  const findPersonTemplate = useCallback(
+    (person: any): FaceTemplate | undefined => {
+      if (!person) return undefined;
+      return faceTemplates.find(
+        (f) =>
+          f.personId === person.id ||
+          (person.linkedUserId && f.personId === person.linkedUserId)
+      );
+    },
+    [faceTemplates]
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1677,6 +1844,43 @@ const FaceDatabaseSection: React.FC<{
     sourceHeight: number
   ) => {
     let uploadedFileId: string | undefined;
+    let targetPersonId = selectedPersonId;
+
+    // Jika akun guru/kepsek/staf belum punya baris di sheet Teachers (mis. akun bawaan/sebelum redeploy GAS),
+    // buatkan baris Teachers otomatis terlebih dahulu agar data wajah & presensi terhubung permanen.
+    const selectedStaffEntry =
+      selectedPersonType === 'teacher'
+        ? teacherStaffList.find(
+            (t) => t.id === selectedPersonId || t.linkedUserId === selectedPersonId
+          )
+        : undefined;
+
+    if (selectedPersonType === 'teacher' && selectedStaffEntry?.isVirtualUserOnly) {
+      try {
+        const ensureTeacherRes = await gasPost<any>('createRecord', {
+          entity: 'Teachers',
+          data: {
+            nip:
+              selectedStaffEntry.nip && selectedStaffEntry.nip !== '-'
+                ? selectedStaffEntry.nip
+                : '',
+            name: selectedStaffEntry.name,
+            email: selectedStaffEntry.email || '',
+            phone: selectedStaffEntry.phone || '',
+            subject:
+              selectedStaffEntry.subject ||
+              defaultSubjectLabelForRole(selectedStaffEntry.role || ''),
+            isActive: true,
+          },
+        });
+        if (ensureTeacherRes?.success && ensureTeacherRes?.data?.id) {
+          targetPersonId = ensureTeacherRes.data.id;
+          setSelectedPersonId(targetPersonId);
+        }
+      } catch (ensureErr) {
+        console.warn('Auto-create Teachers record fallback skipped:', ensureErr);
+      }
+    }
 
     // Upload foto wajah / pas foto latar biru secara privat ke folder Drive via DriveApp
     if (sourceWidth > 0 && sourceHeight > 0) {
@@ -1697,9 +1901,9 @@ const FaceDatabaseSection: React.FC<{
           ctx.drawImage(sourceEl, startX, startY, cropW, Math.min(cropH, sourceHeight - startY), 0, 0, 300, 400);
           const portraitDataUrl = canvas.toDataURL('image/jpeg', 0.9);
 
-          let neatFileName = `${selectedPersonType}_${selectedPersonId}.jpg`;
+          let neatFileName = `${selectedPersonType}_${targetPersonId}.jpg`;
           if (selectedPersonType === 'student') {
-            const stObj = students.find(s => s.id === selectedPersonId);
+            const stObj = students.find(s => s.id === targetPersonId);
             if (stObj) {
               const clsObj = classes.find(c => c.id === stObj.classId);
               const clsPart = (clsObj?.name || stObj.level || 'Siswa').replace(/[\\/:*?"<>|]+/g, ' ').trim();
@@ -1708,9 +1912,9 @@ const FaceDatabaseSection: React.FC<{
               neatFileName = `${clsPart} - ${nisPart} - ${namePart} - Wajah.jpg`;
             }
           } else {
-            const tchObj = teachers.find(t => t.id === selectedPersonId);
+            const tchObj = selectedStaffEntry || teachers.find(t => t.id === targetPersonId);
             if (tchObj) {
-              const nipPart = (tchObj.nip || 'TanpaNIP').replace(/[\\/:*?"<>|]+/g, ' ').trim();
+              const nipPart = (tchObj.nip && tchObj.nip !== '-' ? tchObj.nip : 'TanpaNIP').replace(/[\\/:*?"<>|]+/g, ' ').trim();
               const namePart = tchObj.name.replace(/[\\/:*?"<>|]+/g, ' ').trim();
               neatFileName = `${nipPart} - ${namePart} - Wajah.jpg`;
             }
@@ -1721,9 +1925,9 @@ const FaceDatabaseSection: React.FC<{
             mimeType: 'image/jpeg',
             fileName: neatFileName,
             personType: selectedPersonType,
-            personId: selectedPersonId,
+            personId: targetPersonId,
             targetType: selectedPersonType,
-            targetId: selectedPersonId,
+            targetId: targetPersonId,
             purpose: 'face',
           });
           if (uploadRes.success && uploadRes.fileId) {
@@ -1737,7 +1941,7 @@ const FaceDatabaseSection: React.FC<{
 
     try {
       const res = await gasPost('saveFaceTemplate', {
-        personId: selectedPersonId,
+        personId: targetPersonId,
         personType: selectedPersonType,
         descriptor,
         photoFileId: uploadedFileId,
@@ -1837,13 +2041,18 @@ const FaceDatabaseSection: React.FC<{
     ? students.filter(s =>
         !searchList ||
         s.name.toLowerCase().includes(searchList.toLowerCase()) ||
-        s.nis.includes(searchList)
+        s.nis.toLowerCase().includes(searchList.toLowerCase())
       )
-    : teachers.filter(t =>
-        !searchList ||
-        t.name.toLowerCase().includes(searchList.toLowerCase()) ||
-        t.nip.includes(searchList)
-      );
+    : teacherStaffList.filter(t => {
+        const q = searchList.toLowerCase();
+        return (
+          !q ||
+          t.name.toLowerCase().includes(q) ||
+          String(t.nip || '').toLowerCase().includes(q) ||
+          String(t.subject || '').toLowerCase().includes(q) ||
+          formatRoleDisplayLabel(t.role || '').toLowerCase().includes(q)
+        );
+      });
 
   const studentTemplatesCount = faceTemplates.filter(f => !f.personType || f.personType === 'student').length;
   const teacherTemplatesCount = faceTemplates.filter(f => f.personType === 'teacher').length;
@@ -1855,7 +2064,7 @@ const FaceDatabaseSection: React.FC<{
         <div>
           <h3 className="text-base font-bold text-slate-900 dark:text-white">Pendaftaran Wajah Baru (Biometric)</h3>
           <p className="text-xs text-slate-500">
-            Vektor wajah 128 angka otomatis tersinkron real-time ke Kios Presensi Siswa & Presensi Guru.
+            Vektor wajah 128 angka otomatis tersinkron real-time ke Kios Presensi Siswa, Presensi Guru, Kepala Sekolah &amp; Staf.
           </p>
         </div>
 
@@ -1904,13 +2113,13 @@ const FaceDatabaseSection: React.FC<{
                   : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
               }`}
             >
-              Wajah Guru ({teacherTemplatesCount})
+              Guru, Kepsek &amp; Staf ({teacherTemplatesCount})
             </button>
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-              Pilih {selectedPersonType === 'student' ? 'Siswa' : 'Guru'}
+              Pilih {selectedPersonType === 'student' ? 'Siswa' : 'Guru / Kepala Sekolah / Staf'}
             </label>
             <select
               value={selectedPersonId}
@@ -1924,11 +2133,17 @@ const FaceDatabaseSection: React.FC<{
                       {s.nis} - {s.name} {enrolledPersonIds.has(s.id) ? '✓ (Terdaftar)' : '✗ (Belum)'}
                     </option>
                   ))
-                : teachers.map(t => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} {enrolledPersonIds.has(t.id) ? '✓ (Terdaftar)' : '✗ (Belum)'}
-                    </option>
-                  ))}
+                : teacherStaffList.map(t => {
+                    const isEnrolled = Boolean(findPersonTemplate(t));
+                    const roleBadge = t.role
+                      ? formatRoleDisplayLabel(t.role)
+                      : t.subject || 'Guru';
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({roleBadge}) {isEnrolled ? '✓ (Terdaftar)' : '✗ (Belum)'}
+                      </option>
+                    );
+                  })}
             </select>
           </div>
 
@@ -2105,33 +2320,47 @@ const FaceDatabaseSection: React.FC<{
       <div className="lg:col-span-6 p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <h3 className="text-base font-bold text-slate-900 dark:text-white">
-            Database Wajah {selectedPersonType === 'student' ? 'Siswa' : 'Guru'} ({selectedPersonType === 'student' ? studentTemplatesCount : teacherTemplatesCount} Terdaftar)
+            Database Wajah {selectedPersonType === 'student' ? 'Siswa' : 'Guru, Kepsek & Staf'} ({selectedPersonType === 'student' ? studentTemplatesCount : teacherTemplatesCount} Terdaftar)
           </h3>
           <input
             type="text"
             value={searchList}
             onChange={e => setSearchList(e.target.value)}
-            placeholder={selectedPersonType === 'student' ? 'Cari siswa / NIS...' : 'Cari guru / NIP...'}
+            placeholder={selectedPersonType === 'student' ? 'Cari siswa / NIS...' : 'Cari guru, kepsek, atau NIP...'}
             className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
           />
         </div>
 
         <div className="space-y-2 max-h-[500px] overflow-y-auto">
           {displayList.map((person: any) => {
-            const isEnrolled = enrolledPersonIds.has(person.id);
-            const template = faceTemplates.find(f => f.personId === person.id);
-            const codeLabel = selectedPersonType === 'student' ? `NIS: ${person.nis} • Siswa` : `NIP: ${person.nip} • Guru`;
+            const template = findPersonTemplate(person);
+            const isEnrolled = Boolean(template);
+            const isSelected = selectedPersonId === person.id;
+            const roleOrSubject =
+              selectedPersonType === 'student'
+                ? 'Siswa'
+                : person.role
+                  ? `${formatRoleDisplayLabel(person.role)}${person.subject && person.subject !== formatRoleDisplayLabel(person.role) ? ` (${person.subject})` : ''}`
+                  : person.subject || 'Guru';
+            const codeLabel =
+              selectedPersonType === 'student'
+                ? `NIS: ${person.nis} • Siswa`
+                : `NIP: ${person.nip || '-'} • ${roleOrSubject}`;
             return (
               <div
                 key={person.id}
-                className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs"
+                className={`p-3 rounded-xl border flex items-center justify-between gap-2 text-xs transition ${
+                  isSelected
+                    ? 'bg-blue-50/80 dark:bg-blue-950/40 border-blue-300 dark:border-blue-800'
+                    : 'bg-slate-50 dark:bg-slate-800/60 border-slate-100 dark:border-slate-800'
+                }`}
               >
-                <div>
-                  <div className="font-bold text-slate-900 dark:text-white">{person.name}</div>
-                  <div className="text-[11px] text-slate-400">{codeLabel}</div>
+                <div className="min-w-0">
+                  <div className="font-bold text-slate-900 dark:text-white truncate">{person.name}</div>
+                  <div className="text-[11px] text-slate-400 truncate">{codeLabel}</div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-shrink-0">
                   <span
                     className={`px-2 py-0.5 rounded-md font-semibold text-[10px] ${
                       isEnrolled
@@ -2141,6 +2370,25 @@ const FaceDatabaseSection: React.FC<{
                   >
                     {isEnrolled ? 'Terdaftar & Sinkron' : 'Belum'}
                   </span>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedPersonId(person.id);
+                      setMessage(null);
+                      if (!isCameraActive && !isRequestingCamera) {
+                        void startCamera(undefined, true);
+                      }
+                    }}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[10px] transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300'
+                    }`}
+                    title={`Pilih ${person.name} untuk rekam wajah`}
+                  >
+                    {isSelected ? 'Terpilih' : isEnrolled ? 'Perbarui' : 'Rekam'}
+                  </button>
 
                   {template && (
                     <button
@@ -2206,19 +2454,25 @@ const FaceDatabaseSection: React.FC<{
 // Users Management Section
 const UserManagementSection: React.FC<{
   users: any[];
+  teachers: Teacher[];
+  faceTemplates: FaceTemplate[];
   classes: SchoolClass[];
   activeUsers: Array<{ userId: string; activeTab: string; deviceLabel: string }>;
   currentUserId?: string;
   onRefresh: () => Promise<void> | void;
+  onJumpToFaceEnroll?: (target: { personType: 'student' | 'teacher'; personId: string }) => void;
   onSavedToast?: (msg: string) => void;
   onDeletedToast?: (msg: string) => void;
   onErrorToast?: (msg: string) => void;
 }> = ({
   users,
+  teachers,
+  faceTemplates,
   classes,
   activeUsers,
   currentUserId,
   onRefresh,
+  onJumpToFaceEnroll,
   onSavedToast,
   onDeletedToast,
   onErrorToast,
@@ -2235,6 +2489,7 @@ const UserManagementSection: React.FC<{
   const [userFeedback, setUserFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [resetTarget, setResetTarget] = useState<{ id: string; name: string; diubah_pada?: string } | null>(null);
   const [resetNewPassword, setResetNewPassword] = useState('');
+  const createFormRef = useRef<HTMLFormElement | null>(null);
 
   // Edit User Modal state
   const [editingUser, setEditingUser] = useState<any | null>(null);
@@ -2245,6 +2500,7 @@ const UserManagementSection: React.FC<{
     role: 'admin' | 'kepala_sekolah' | 'wali_kelas' | 'bk' | 'kesiswaan' | 'guru';
     classId: string;
     nip: string;
+    subject: string;
     password: string;
     isActive: boolean;
   }>({
@@ -2254,6 +2510,7 @@ const UserManagementSection: React.FC<{
     role: 'guru',
     classId: '',
     nip: '',
+    subject: '',
     password: '',
     isActive: true,
   });
@@ -2262,6 +2519,7 @@ const UserManagementSection: React.FC<{
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [togglingUserId, setTogglingUserId] = useState<string | null>(null);
+  const [ensuringFaceUserId, setEnsuringFaceUserId] = useState<string | null>(null);
   const [deleteUserTarget, setDeleteUserTarget] = useState<any | null>(null);
   const [isDeletingUser, setIsDeletingUser] = useState(false);
 
@@ -2276,7 +2534,60 @@ const UserManagementSection: React.FC<{
     [users]
   );
 
+  const getUserSyncStatus = useCallback(
+    (u: any) => {
+      const matchedTeacher = findMatchingTeacherForUser(u, teachers);
+      const isFaceEnrolled = faceTemplates.some(
+        (f) =>
+          f.personType === 'teacher' &&
+          (f.personId === u.id ||
+            (u.teacherId && f.personId === u.teacherId) ||
+            (matchedTeacher && f.personId === matchedTeacher.id))
+      );
+      return { matchedTeacher, isFaceEnrolled };
+    },
+    [teachers, faceTemplates]
+  );
+
+  const ensureTeacherRecordForUser = async (
+    userObj: {
+      id?: string;
+      teacherId?: string;
+      name: string;
+      nip?: string;
+      email?: string;
+      role: string;
+      subject?: string;
+      isActive?: boolean;
+    },
+    syncedTeacher?: any
+  ): Promise<string> => {
+    if (syncedTeacher?.id) return syncedTeacher.id;
+    const matched = findMatchingTeacherForUser(userObj, teachers);
+    if (matched?.id) return matched.id;
+    try {
+      const tRes = await gasPost<any>('createRecord', {
+        entity: 'Teachers',
+        data: {
+          nip: (userObj.nip || '').trim(),
+          name: userObj.name.trim(),
+          email: (userObj.email || '').trim(),
+          phone: '',
+          subject: (userObj.subject || '').trim() || defaultSubjectLabelForRole(userObj.role),
+          isActive: userObj.isActive !== false,
+        },
+      });
+      if (tRes?.success && tRes?.data?.id) {
+        return tRes.data.id;
+      }
+    } catch (err) {
+      console.warn('Client teacher sync fallback failed:', err);
+    }
+    return userObj.id || '';
+  };
+
   const openEditUserModal = (target: any) => {
+    const matchedTeacher = findMatchingTeacherForUser(target, teachers);
     setUserFeedback(null);
     setEditingUser(target);
     setEditForm({
@@ -2285,14 +2596,14 @@ const UserManagementSection: React.FC<{
       email: target.email || '',
       role: (target.role || 'guru') as any,
       classId: target.classId || '',
-      nip: target.nip || '',
+      nip: target.nip || matchedTeacher?.nip || '',
+      subject: target.subject || matchedTeacher?.subject || '',
       password: '',
       isActive: target.isActive !== false,
     });
   };
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitCreateUser = async (goToFaceAfter: boolean) => {
     if (isSavingUser) return;
     setUserFeedback(null);
     if (username.trim().toLowerCase() === 'superadmin') {
@@ -2301,11 +2612,35 @@ const UserManagementSection: React.FC<{
     }
     setIsSavingUser(true);
     try {
-      const res = await gasPost('createRecord', {
+      const effectiveSubject = subject.trim() || defaultSubjectLabelForRole(role);
+      const res = await gasPost<any>('createRecord', {
         entity: 'Users',
-        data: { username: username.trim(), password, name: name.trim(), role, classId, email: email.trim(), nip: nip.trim(), subject: subject.trim() },
+        data: {
+          username: username.trim(),
+          password,
+          name: name.trim(),
+          role,
+          classId: role === 'wali_kelas' ? classId : '',
+          email: email.trim(),
+          nip: nip.trim(),
+          subject: effectiveSubject,
+        },
       });
       if (res.success) {
+        const createdUser = res.data || {};
+        const syncedTeacherId = await ensureTeacherRecordForUser(
+          {
+            id: createdUser.id,
+            teacherId: createdUser.teacherId,
+            name: name.trim(),
+            nip: nip.trim(),
+            email: email.trim(),
+            role,
+            subject: effectiveSubject,
+            isActive: true,
+          },
+          res.syncedTeacher
+        );
         await onRefresh();
         const createdName = name.trim();
         setShowModal(false);
@@ -2316,9 +2651,12 @@ const UserManagementSection: React.FC<{
         setNip('');
         setSubject('');
         setClassId('');
-        const msg = `Akun "${createdName}" berhasil ditambahkan & tersimpan.`;
+        const msg = `Akun "${createdName}" berhasil ditambahkan & langsung tersinkron ke Database Wajah.`;
         setUserFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
+        if (goToFaceAfter && syncedTeacherId && onJumpToFaceEnroll) {
+          onJumpToFaceEnroll({ personType: 'teacher', personId: syncedTeacherId });
+        }
       } else {
         const errMsg = res.error || 'Gagal membuat pengguna';
         setUserFeedback({ type: 'error', text: errMsg });
@@ -2331,6 +2669,11 @@ const UserManagementSection: React.FC<{
     } finally {
       setIsSavingUser(false);
     }
+  };
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitCreateUser(false);
   };
 
   const handleUpdateUser = async (e: React.FormEvent) => {
@@ -2353,6 +2696,7 @@ const UserManagementSection: React.FC<{
     }
     setIsSavingUser(true);
     try {
+      const effectiveSubject = editForm.subject.trim() || defaultSubjectLabelForRole(editForm.role);
       const updatePayload: Record<string, any> = {
         name: trimmedName,
         username: trimmedUsername,
@@ -2360,21 +2704,50 @@ const UserManagementSection: React.FC<{
         role: editForm.role,
         classId: editForm.role === 'wali_kelas' ? editForm.classId : '',
         nip: editForm.nip.trim(),
+        subject: effectiveSubject,
         isActive: editForm.isActive,
       };
       if (editForm.password.trim()) {
         updatePayload.password = editForm.password.trim();
       }
-      const res = await gasPost('updateRecord', {
+      const res = await gasPost<any>('updateRecord', {
         entity: 'Users',
         id: editingUser.id,
         data: updatePayload,
         expectedUpdatedAt: editingUser.diubah_pada || editingUser.updatedAt,
       });
       if (res.success) {
+        // Fallback sinkronisasi Teachers apabila Apps Script versi lama belum mengembalikan syncedTeacher
+        if (!('syncedTeacher' in res)) {
+          const matchedTeacher = findMatchingTeacherForUser(editingUser, teachers);
+          if (matchedTeacher) {
+            await gasPost('updateRecord', {
+              entity: 'Teachers',
+              id: matchedTeacher.id,
+              data: {
+                name: trimmedName,
+                nip: editForm.nip.trim(),
+                email: editForm.email.trim(),
+                subject: effectiveSubject,
+                isActive: editForm.isActive,
+              },
+              expectedUpdatedAt: matchedTeacher.diubah_pada || matchedTeacher.updatedAt,
+            }).catch(() => {});
+          } else if (editForm.isActive) {
+            await ensureTeacherRecordForUser({
+              id: editingUser.id,
+              name: trimmedName,
+              nip: editForm.nip.trim(),
+              email: editForm.email.trim(),
+              role: editForm.role,
+              subject: effectiveSubject,
+              isActive: editForm.isActive,
+            });
+          }
+        }
         await onRefresh();
         setEditingUser(null);
-        const msg = `Perubahan akun "${trimmedName}" (${trimmedUsername}) tersimpan ke Google Sheets.`;
+        const msg = `Perubahan akun "${trimmedName}" (${trimmedUsername}) tersimpan & tersinkron ke Database Wajah.`;
         setUserFeedback({ type: 'success', text: msg });
         onSavedToast?.(msg);
       } else {
@@ -2388,6 +2761,18 @@ const UserManagementSection: React.FC<{
       onErrorToast?.(errMsg);
     } finally {
       setIsSavingUser(false);
+    }
+  };
+
+  const handleDirectFaceEnroll = async (targetUser: any) => {
+    if (!onJumpToFaceEnroll || ensuringFaceUserId) return;
+    setEnsuringFaceUserId(targetUser.id);
+    try {
+      const teacherId = await ensureTeacherRecordForUser(targetUser);
+      await onRefresh();
+      onJumpToFaceEnroll({ personType: 'teacher', personId: teacherId || targetUser.id });
+    } finally {
+      setEnsuringFaceUserId(null);
     }
   };
 
@@ -2543,6 +2928,7 @@ const UserManagementSection: React.FC<{
               <th className="py-3 px-3">Username Login</th>
               <th className="py-3 px-3">Peran (Role)</th>
               <th className="py-3 px-3">Kelas Binaan</th>
+              <th className="py-3 px-3">Database Wajah</th>
               <th className="py-3 px-3">Sesi &amp; Status</th>
               <th className="py-3 px-3 text-right">Aksi</th>
             </tr>
@@ -2552,6 +2938,8 @@ const UserManagementSection: React.FC<{
               const isOnline = onlineUserIds.has(u.id);
               const isSelf = u.id === currentUserId;
               const isToggling = togglingUserId === u.id;
+              const isEnsuringFace = ensuringFaceUserId === u.id;
+              const { isFaceEnrolled } = getUserSyncStatus(u);
               return (
                 <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="py-3 px-3 font-bold text-slate-900 dark:text-white">
@@ -2571,11 +2959,22 @@ const UserManagementSection: React.FC<{
                   <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-300 font-semibold">{u.username}</td>
                   <td className="py-3 px-3">
                     <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                      {u.role}
+                      {formatRoleDisplayLabel(u.role)}
                     </span>
                   </td>
                   <td className="py-3 px-3 text-slate-500">
                     {classes.find(c => c.id === u.classId)?.name || '-'}
+                  </td>
+                  <td className="py-3 px-3">
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] ${
+                        isFaceEnrolled
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                      }`}
+                    >
+                      {isFaceEnrolled ? 'Wajah Terdaftar' : 'Siap Rekam Wajah'}
+                    </span>
                   </td>
                   <td className="py-3 px-3">
                     <div className="flex items-center gap-1.5">
@@ -2601,6 +3000,22 @@ const UserManagementSection: React.FC<{
                     </div>
                   </td>
                   <td className="py-3 px-3 text-right space-x-1 whitespace-nowrap">
+                    {onJumpToFaceEnroll && u.isActive !== false && (
+                      <button
+                        type="button"
+                        disabled={Boolean(ensuringFaceUserId)}
+                        onClick={() => void handleDirectFaceEnroll(u)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-300 dark:hover:bg-emerald-900/60 rounded-lg transition disabled:opacity-50"
+                        title="Langsung buka Database Wajah untuk pengguna ini"
+                      >
+                        {isEnsuringFace ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Camera className="w-3 h-3" />
+                        )}
+                        <span>{isFaceEnrolled ? 'Update Wajah' : 'Rekam Wajah'}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => openEditUserModal(u)}
@@ -2703,7 +3118,7 @@ const UserManagementSection: React.FC<{
                   <option value="admin">Administrator</option>
                 </select>
               </div>
-              {(editForm.role === 'guru' || editForm.role === 'wali_kelas' || editForm.role === 'bk' || editForm.role === 'kesiswaan') && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
                   <label className="block font-semibold mb-1">NIP (Opsional)</label>
                   <input
@@ -2714,7 +3129,17 @@ const UserManagementSection: React.FC<{
                     className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   />
                 </div>
-              )}
+                <div>
+                  <label className="block font-semibold mb-1">Jabatan / Mata Pelajaran</label>
+                  <input
+                    type="text"
+                    value={editForm.subject}
+                    onChange={e => setEditForm({ ...editForm, subject: e.target.value })}
+                    placeholder="Kepala Sekolah / Guru Mapel"
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                </div>
+              </div>
               {editForm.role === 'wali_kelas' && (
                 <div>
                   <label className="block font-semibold mb-1">Kelas yang Diampu</label>
@@ -2838,8 +3263,11 @@ const UserManagementSection: React.FC<{
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-2 sm:p-4 animate-in fade-in">
           <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-800 animate-in zoom-in-95">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-4">Tambah Pengguna Baru</h3>
-            <form onSubmit={handleCreate} className="space-y-3 text-xs">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">Tambah Pengguna Baru</h3>
+            <p className="text-[11px] text-slate-500 mb-4">
+              Semua pengguna aktif (Guru, Kepala Sekolah, Wali Kelas, BK, Kesiswaan &amp; Admin) otomatis sinkron ke Database Wajah.
+            </p>
+            <form ref={createFormRef} onSubmit={handleCreate} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold mb-1">Nama Lengkap</label>
                 <input
@@ -2897,30 +3325,28 @@ const UserManagementSection: React.FC<{
                 </select>
               </div>
 
-              {(role === 'guru' || role === 'wali_kelas' || role === 'bk' || role === 'kesiswaan') && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <label className="block font-semibold mb-1">NIP (Opsional)</label>
-                    <input
-                      type="text"
-                      value={nip}
-                      onChange={e => setNip(e.target.value)}
-                      placeholder="1990..."
-                      className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Mata Pelajaran / Jabatan</label>
-                    <input
-                      type="text"
-                      value={subject}
-                      onChange={e => setSubject(e.target.value)}
-                      placeholder="Contoh: Matematika / Wali Kelas"
-                      className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-                    />
-                  </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-semibold mb-1">NIP (Opsional)</label>
+                  <input
+                    type="text"
+                    value={nip}
+                    onChange={e => setNip(e.target.value)}
+                    placeholder="1990..."
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
                 </div>
-              )}
+                <div>
+                  <label className="block font-semibold mb-1">Mata Pelajaran / Jabatan</label>
+                  <input
+                    type="text"
+                    value={subject}
+                    onChange={e => setSubject(e.target.value)}
+                    placeholder={defaultSubjectLabelForRole(role)}
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                </div>
+              </div>
 
               {role === 'wali_kelas' && (
                 <div>
@@ -2940,7 +3366,7 @@ const UserManagementSection: React.FC<{
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex flex-wrap justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
                   disabled={isSavingUser}
@@ -2949,6 +3375,26 @@ const UserManagementSection: React.FC<{
                 >
                   Batal
                 </button>
+                {onJumpToFaceEnroll && (
+                  <button
+                    type="button"
+                    disabled={isSavingUser}
+                    onClick={() => {
+                      if (createFormRef.current && !createFormRef.current.reportValidity()) {
+                        return;
+                      }
+                      void submitCreateUser(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold disabled:opacity-60 cursor-pointer"
+                  >
+                    {isSavingUser ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Camera className="w-3.5 h-3.5" />
+                    )}
+                    <span>Simpan &amp; Rekam Wajah</span>
+                  </button>
+                )}
                 <button
                   type="submit"
                   disabled={isSavingUser}
