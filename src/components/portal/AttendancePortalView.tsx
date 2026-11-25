@@ -14,6 +14,8 @@ import {
   Lock,
   HeartHandshake,
   FileSpreadsheet,
+  BookOpen,
+  PenTool,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useSync } from '../../context/SyncContext.tsx';
@@ -22,6 +24,7 @@ import { formatWibTime24 } from '../../lib/sessions.ts';
 interface AttendancePortalViewProps {
   onSelectStudentKiosk: () => void;
   onSelectTeacherAttendance: () => void;
+  onSelectGuestBook: () => void;
   onOpenAdminLogin: () => void;
   onOpenTeacherLogin: () => void;
 }
@@ -29,6 +32,7 @@ interface AttendancePortalViewProps {
 export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
   onSelectStudentKiosk,
   onSelectTeacherAttendance,
+  onSelectGuestBook,
   onOpenAdminLogin,
   onOpenTeacherLogin,
 }) => {
@@ -141,18 +145,18 @@ export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
         </div>
       </div>
 
-      {/* Main 3 Options: Presensi Siswa, Presensi Guru, Login Admin */}
+      {/* Main Options: Presensi Siswa, Presensi Guru, Tamu Sekolah, Login Admin */}
       <div className="space-y-4">
         <div className="text-center md:text-left space-y-1">
           <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
-            Pilih Menu Presensi & Akses Akun
+            Pilih Menu Presensi, Tamu &amp; Akses Akun
           </h2>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
             Silakan pilih modul yang sesuai dengan kebutuhan Anda saat ini:
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
           {/* PILIHAN 1: PRESENSI SISWA */}
           <div className="group relative flex flex-col justify-between p-6 sm:p-7 rounded-3xl bg-white dark:bg-slate-900 border-2 border-blue-200 dark:border-blue-900/60 hover:border-blue-600 dark:hover:border-blue-500 shadow-md hover:shadow-xl transition-all duration-200 hover:-translate-y-1">
             <div className="space-y-4">
@@ -292,9 +296,58 @@ export const AttendancePortalView: React.FC<AttendancePortalViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenAdminLogin}
-                className="w-full py-3.5 px-5 rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 active:scale-98 text-white text-sm font-bold shadow-lg transition flex items-center justify-center gap-2"
+                className="w-full py-3.5 px-5 min-h-[44px] rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 active:scale-98 text-white text-sm font-bold shadow-lg transition flex items-center justify-center gap-2"
               >
                 <span>Login Administrator / Staf</span>
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </button>
+            </div>
+          </div>
+
+          {/* PILIHAN 4: BUKU TAMU SEKOLAH */}
+          <div className="group relative flex flex-col justify-between p-6 sm:p-7 rounded-3xl bg-white dark:bg-slate-900 border-2 border-teal-200 dark:border-teal-900/60 hover:border-teal-600 dark:hover:border-teal-500 shadow-md hover:shadow-xl transition-all duration-200 hover:-translate-y-1">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="w-14 h-14 rounded-2xl bg-teal-600 text-white flex items-center justify-center font-bold shadow-md shadow-teal-500/30 flex-shrink-0">
+                  <BookOpen className="w-7 h-7" />
+                </div>
+                <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-teal-50 text-teal-800 dark:bg-teal-950/80 dark:text-teal-300 border border-teal-200 dark:border-teal-800">
+                  Buku Tamu Digital
+                </span>
+              </div>
+
+              <div>
+                <h3 className="text-xl font-black text-slate-900 dark:text-white group-hover:text-teal-600 dark:group-hover:text-teal-400 transition">
+                  Tamu Sekolah
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+                  Pencatatan identitas tamu sekolah (nama, alamat, no. HP) lengkap dengan tanda tangan digital tersimpan ke Sheets &amp; Drive.
+                </p>
+              </div>
+
+              <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4 text-teal-600 flex-shrink-0" />
+                  <span>Nama, Alamat, No. HP &amp; Keperluan Tamu</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <PenTool className="w-4 h-4 text-teal-600 flex-shrink-0" />
+                  <span>Tanda Tangan Digital Sentuh / Mouse</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-teal-600 flex-shrink-0" />
+                  <span>Arsip Otomatis Sheets &amp; Google Drive</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-8 pt-4">
+              <button
+                type="button"
+                onClick={onSelectGuestBook}
+                className="w-full py-3.5 px-5 min-h-[44px] rounded-2xl bg-teal-600 hover:bg-teal-700 active:scale-98 text-white text-sm font-bold shadow-lg shadow-teal-600/25 transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <span>Buka Buku Tamu</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </button>
             </div>

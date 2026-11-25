@@ -48,6 +48,7 @@ import {
   uploadImageAssetToDrive,
   deleteImageAssetFromDrive,
   extractDriveFileId,
+  invalidateDrivePhotoCache,
 } from '../../lib/api.ts';
 import { emitActionToast } from '../../lib/toast.ts';
 import { DriveImage } from '../common/DriveImage.tsx';
@@ -72,6 +73,12 @@ import { TableSkeleton } from '../common/Skeleton.tsx';
 import { ConfirmModal } from '../common/ConfirmModal.tsx';
 import { TimeInput24h } from '../common/TimeInput24h.tsx';
 import { CameraPreviewStage } from '../common/CameraPreviewStage.tsx';
+import {
+  acquireAccurateLocation,
+  isValidLatLng,
+  parseCoordinate,
+  MAX_ACCEPTABLE_GPS_ACCURACY_METERS,
+} from '../../lib/geolocation.ts';
 
 function normalizeEducationLevel(raw?: string): EducationLevel | '' {
   const up = String(raw || '').toUpperCase().replace(/\s+/g, '');
@@ -1571,13 +1578,19 @@ function formatRoleDisplayLabel(role: string): string {
 }
 
 function findMatchingTeacherForUser(u: any, teachersList: Teacher[]): Teacher | undefined {
-  if (!u) return undefined;
+  return findAllMatchingTeachersForUser(u, teachersList)[0];
+}
+
+function findAllMatchingTeachersForUser(u: any, teachersList: Teacher[]): Teacher[] {
+  if (!u) return [];
+  const userId = String(u.id || '').trim();
   const userTeacherId = String(u.teacherId || '').trim();
   const userNip = String(u.nip || '').trim();
   const userEmail = String(u.email || '').trim().toLowerCase();
   const userName = String(u.name || '').trim().toLowerCase();
 
-  return teachersList.find((t) => {
+  return teachersList.filter((t) => {
+    if (userId && t.id === userId) return true;
     if (userTeacherId && t.id === userTeacherId) return true;
     const tNip = String(t.nip || '').trim();
     const tEmail = String(t.email || '').trim().toLowerCase();
@@ -2054,8 +2067,31 @@ const FaceDatabaseSection: React.FC<{
         );
       });
 
-  const studentTemplatesCount = faceTemplates.filter(f => !f.personType || f.personType === 'student').length;
-  const teacherTemplatesCount = faceTemplates.filter(f => f.personType === 'teacher').length;
+  const validStudentIds = useMemo(() => new Set(students.map(s => s.id)), [students]);
+  const validTeacherStaffIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const t of teacherStaffList) {
+      ids.add(t.id);
+      if (t.linkedUserId) ids.add(t.linkedUserId);
+    }
+    return ids;
+  }, [teacherStaffList]);
+
+  useEffect(() => {
+    if (!selectedPersonId) return;
+    if (selectedPersonType === 'student' && !validStudentIds.has(selectedPersonId)) {
+      setSelectedPersonId('');
+    } else if (selectedPersonType === 'teacher' && !validTeacherStaffIds.has(selectedPersonId)) {
+      setSelectedPersonId('');
+    }
+  }, [selectedPersonId, selectedPersonType, validStudentIds, validTeacherStaffIds]);
+
+  const studentTemplatesCount = faceTemplates.filter(
+    f => (!f.personType || f.personType === 'student') && validStudentIds.has(f.personId)
+  ).length;
+  const teacherTemplatesCount = faceTemplates.filter(
+    f => f.personType === 'teacher' && validTeacherStaffIds.has(f.personId)
+  ).length;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -2820,16 +2856,43 @@ const UserManagementSection: React.FC<{
     }
     setIsDeletingUser(true);
     try {
+      const targetUser = deleteUserTarget;
+      const matchedTeachers = findAllMatchingTeachersForUser(targetUser, teachers);
+      const relatedIds = new Set<string>([targetUser.id]);
+      if (targetUser.teacherId) relatedIds.add(String(targetUser.teacherId));
+      for (const mt of matchedTeachers) relatedIds.add(mt.id);
+
+      const relatedFaceTemplates = faceTemplates.filter((f) => relatedIds.has(f.personId));
+
       const res = await gasPost('softDeleteRecord', {
         entity: 'Users',
-        id: deleteUserTarget.id,
-        expectedUpdatedAt: deleteUserTarget.diubah_pada || deleteUserTarget.updatedAt,
+        id: targetUser.id,
+        expectedUpdatedAt: targetUser.diubah_pada || targetUser.updatedAt,
       });
       if (res.success) {
+        // Belt-and-suspenders cascade cleanup if backend missed duplicate Teachers or orphaned FaceTemplates
+        for (const tpl of relatedFaceTemplates) {
+          if (tpl.photoFileId) {
+            invalidateDrivePhotoCache(tpl.photoFileId);
+          }
+          await gasPost(
+            'softDeleteRecord',
+            { entity: 'FaceTemplates', id: tpl.id, expectedUpdatedAt: tpl.diubah_pada || tpl.updatedAt },
+            { trackSaveStatus: false, silent: true }
+          ).catch(() => {});
+        }
+        for (const mt of matchedTeachers) {
+          await gasPost(
+            'softDeleteRecord',
+            { entity: 'Teachers', id: mt.id, expectedUpdatedAt: mt.diubah_pada || mt.updatedAt },
+            { trackSaveStatus: false, silent: true }
+          ).catch(() => {});
+        }
+
         await onRefresh();
-        const deletedName = deleteUserTarget.name;
+        const deletedName = targetUser.name;
         setDeleteUserTarget(null);
-        const msg = `Akun "${deletedName}" berhasil dihapus bersih dari Sheets.`;
+        const msg = `Akun "${deletedName}" beserta data guru & database wajah terkait berhasil dihapus bersih.`;
         setUserFeedback({ type: 'success', text: msg });
         onDeletedToast?.(msg);
       } else {
@@ -3436,12 +3499,39 @@ const LocationsSection: React.FC<{
   const [longitude, setLongitude] = useState('');
   const [radiusMeters, setRadiusMeters] = useState('150');
   const [isSaving, setIsSaving] = useState(false);
+  const [isLocatingGps, setIsLocatingGps] = useState(false);
+  const [gpsAcquireInfo, setGpsAcquireInfo] = useState<{
+    accuracy: number;
+    sampleCount: number;
+    isAccurate: boolean;
+  } | null>(null);
+  const [gpsProgressText, setGpsProgressText] = useState<string>('');
+  const [modalError, setModalError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SchoolLocation | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const gpsAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (gpsAbortRef.current) gpsAbortRef.current.abort();
+    };
+  }, []);
+
+  const closeModal = () => {
+    if (gpsAbortRef.current) gpsAbortRef.current.abort();
+    setIsLocatingGps(false);
+    setGpsProgressText('');
+    setModalError(null);
+    setShowModal(false);
+    setEditingLocation(null);
+  };
 
   const openAddModal = () => {
     setFeedback(null);
+    setModalError(null);
+    setGpsAcquireInfo(null);
+    setGpsProgressText('');
     setEditingLocation(null);
     setName('');
     setLatitude('');
@@ -3452,6 +3542,9 @@ const LocationsSection: React.FC<{
 
   const openEditModal = (loc: SchoolLocation) => {
     setFeedback(null);
+    setModalError(null);
+    setGpsAcquireInfo(null);
+    setGpsProgressText('');
     setEditingLocation(loc);
     setName(loc.name || '');
     setLatitude(String(loc.latitude ?? ''));
@@ -3460,18 +3553,46 @@ const LocationsSection: React.FC<{
     setShowModal(true);
   };
 
-  const handleGetCurrentGps = () => {
+  const handleGetCurrentGps = async () => {
     setFeedback(null);
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          setLatitude(String(pos.coords.latitude));
-          setLongitude(String(pos.coords.longitude));
+    setModalError(null);
+    if (gpsAbortRef.current) gpsAbortRef.current.abort();
+    const controller = new AbortController();
+    gpsAbortRef.current = controller;
+
+    setIsLocatingGps(true);
+    setGpsAcquireInfo(null);
+    setGpsProgressText('Mengunci GPS akurasi tinggi (tanpa cache)...');
+
+    try {
+      const reading = await acquireAccurateLocation({
+        stabilizeWindowMs: 5500,
+        timeoutMs: 15000,
+        targetAccuracyMeters: 15,
+        signal: controller.signal,
+        onProgress: (info) => {
+          if (!controller.signal.aborted) {
+            setGpsProgressText(`Sampel ke-${info.sampleCount} • Akurasi terbaik ±${info.bestAccuracy}m`);
+          }
         },
-        err => setFeedback({ type: 'error', text: 'Gagal mendeteksi GPS: ' + err.message })
-      );
-    } else {
-      setFeedback({ type: 'error', text: 'Browser ini tidak mendukung Geolocation GPS.' });
+      });
+      if (controller.signal.aborted) return;
+      setLatitude(reading.lat.toFixed(6));
+      setLongitude(reading.lng.toFixed(6));
+      const accRounded = Math.round(reading.accuracy);
+      setGpsAcquireInfo({
+        accuracy: accRounded,
+        sampleCount: reading.sampleCount,
+        isAccurate: accRounded <= MAX_ACCEPTABLE_GPS_ACCURACY_METERS,
+      });
+    } catch (err: any) {
+      if (controller.signal.aborted || err?.message === 'Permintaan lokasi dibatalkan.') return;
+      setModalError(err?.message || 'Gagal mendeteksi GPS perangkat.');
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsLocatingGps(false);
+        setGpsProgressText('');
+      }
     }
   };
 
@@ -3479,13 +3600,32 @@ const LocationsSection: React.FC<{
     e.preventDefault();
     if (isSaving) return;
     setFeedback(null);
+    setModalError(null);
+
+    const parsedLat = parseCoordinate(latitude);
+    const parsedLng = parseCoordinate(longitude);
+    const parsedRadius = Number(radiusMeters);
+
+    if (parsedLat === null || parsedLng === null || !isValidLatLng(parsedLat, parsedLng)) {
+      setModalError('Koordinat tidak valid. Latitude harus -90 s/d 90 dan Longitude -180 s/d 180 (tidak boleh 0,0).');
+      return;
+    }
+    if (parsedLat > 20 && parsedLng < 20) {
+      setModalError('Koordinat terlihat tertukar! Di Indonesia, Latitude bernilai sekitar -11 s/d +6 dan Longitude +95 s/d +141.');
+      return;
+    }
+    if (!Number.isFinite(parsedRadius) || parsedRadius < 10) {
+      setModalError('Radius toleransi minimal 10 meter.');
+      return;
+    }
+
     setIsSaving(true);
     try {
       const payload = {
         name: name.trim(),
-        latitude: Number(latitude),
-        longitude: Number(longitude),
-        radiusMeters: Number(radiusMeters) || 150,
+        latitude: parsedLat,
+        longitude: parsedLng,
+        radiusMeters: Math.round(parsedRadius),
       };
       const res = editingLocation
         ? await gasPost('updateRecord', {
@@ -3503,8 +3643,7 @@ const LocationsSection: React.FC<{
         const msg = editingLocation
           ? `Perubahan titik lokasi "${payload.name}" tersimpan.`
           : `Titik lokasi geofence "${payload.name}" berhasil disimpan.`;
-        setShowModal(false);
-        setEditingLocation(null);
+        closeModal();
         setName('');
         setLatitude('');
         setLongitude('');
@@ -3512,12 +3651,12 @@ const LocationsSection: React.FC<{
         onSavedToast?.(msg);
       } else {
         const errMsg = res.error || 'Gagal menyimpan lokasi.';
-        setFeedback({ type: 'error', text: errMsg });
+        setModalError(errMsg);
         onErrorToast?.(errMsg);
       }
     } catch (e: any) {
       const errMsg = e?.message || 'Gagal menyimpan lokasi.';
-      setFeedback({ type: 'error', text: errMsg });
+      setModalError(errMsg);
       onErrorToast?.(errMsg);
     } finally {
       setIsSaving(false);
@@ -3642,73 +3781,104 @@ const LocationsSection: React.FC<{
               {editingLocation ? `Edit Titik Lokasi: ${editingLocation.name}` : 'Tambah Titik Lokasi Baru'}
             </h3>
             <form onSubmit={handleSaveLocation} className="space-y-3 text-xs">
+              {modalError && (
+                <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 font-semibold">
+                  {modalError}
+                </div>
+              )}
               <div>
                 <label className="block font-semibold mb-1">Nama Titik Lokasi</label>
                 <input
                   type="text"
                   value={name}
                   onChange={e => setName(e.target.value)}
-                  placeholder="Contoh: Kampus Utama / Gedung Lab"
+                  placeholder="Contoh: Kampus Utama / Kantor Guru"
                   className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   required
                 />
               </div>
 
-              <div className="flex gap-2 items-center">
+              <div className="space-y-1.5">
                 <button
                   type="button"
-                  onClick={handleGetCurrentGps}
-                  className="px-3 py-2 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 rounded-xl font-semibold flex items-center gap-1.5"
+                  disabled={isLocatingGps}
+                  onClick={() => void handleGetCurrentGps()}
+                  className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 rounded-xl font-semibold flex items-center gap-1.5 disabled:opacity-60 cursor-pointer"
                 >
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>Ambil GPS Perangkat Ini</span>
+                  {isLocatingGps ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <MapPin className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isLocatingGps ? 'Mengunci GPS Akurasi Tinggi...' : 'Ambil GPS Perangkat Ini'}</span>
                 </button>
+                {gpsProgressText && (
+                  <div className="text-[11px] font-mono text-indigo-600 dark:text-indigo-300">
+                    {gpsProgressText}
+                  </div>
+                )}
+                {gpsAcquireInfo && (
+                  <div
+                    className={`p-2.5 rounded-xl border text-[11px] font-semibold ${
+                      gpsAcquireInfo.isAccurate
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                        : 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
+                    }`}
+                  >
+                    {gpsAcquireInfo.isAccurate
+                      ? `Koordinat dikunci akurat (±${gpsAcquireInfo.accuracy}m dari ${gpsAcquireInfo.sampleCount} pembacaan GPS).`
+                      : `Akurasi GPS masih rendah (±${gpsAcquireInfo.accuracy}m). Disarankan berdiri di area terbuka lalu klik Ambil GPS ulang.`}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block font-semibold mb-1">Latitude</label>
+                  <label className="block font-semibold mb-1">Latitude (-90 s/d 90)</label>
                   <input
                     type="number"
                     step="any"
                     value={latitude}
                     onChange={e => setLatitude(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                    placeholder="-7.xxxxxx"
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
                     required
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold mb-1">Longitude</label>
+                  <label className="block font-semibold mb-1">Longitude (-180 s/d 180)</label>
                   <input
                     type="number"
                     step="any"
                     value={longitude}
                     onChange={e => setLongitude(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                    placeholder="112.xxxxxx"
+                    className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
                     required
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block font-semibold mb-1">Radius Toleransi (Meter)</label>
+                <label className="block font-semibold mb-1">Radius Toleransi (Meter, minimal 10m)</label>
                 <input
                   type="number"
+                  min={10}
                   value={radiusMeters}
                   onChange={e => setRadiusMeters(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
                   required
                 />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Radius hanya berubah sesuai ketetapan Admin (tidak pernah diubah otomatis oleh sistem).
+                </p>
               </div>
 
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
                 <button
                   type="button"
                   disabled={isSaving}
-                  onClick={() => {
-                    setShowModal(false);
-                    setEditingLocation(null);
-                  }}
+                  onClick={closeModal}
                   className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 disabled:opacity-50"
                 >
                   Batal
@@ -4074,7 +4244,7 @@ const ClassesSection: React.FC<{
                   className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                 >
                   <option value="">-- Belum Ditentukan --</option>
-                  {teachers.map(t => (
+                  {teachers.filter(t => t.isActive !== false).map(t => (
                     <option key={t.id} value={t.id}>
                       {t.name}
                     </option>
@@ -6075,7 +6245,7 @@ const TeacherRecapSection: React.FC<{
               className="px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
             >
               <option value="">-- Pilih Guru --</option>
-              {teachers.map(t => (
+              {teachers.filter(t => t.isActive !== false).map(t => (
                 <option key={t.id} value={t.id}>
                   {t.name} ({t.nip || 'Tanpa NIP'})
                 </option>

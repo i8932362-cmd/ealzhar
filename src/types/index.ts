@@ -150,6 +150,8 @@ export interface TeacherAttendance {
   latitude?: number;
   longitude?: number;
   distanceMeters?: number;
+  accuracyMeters?: number;
+  gpsStatus?: 'VALID' | 'TIDAK AKURAT' | 'DI LUAR AREA';
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -283,6 +285,22 @@ export interface ProblemStudent {
   totalToiletCount: number;
   warningLevel: 'KUNING' | 'MERAH';
   issues: string[];
+}
+
+export interface GuestBookEntry {
+  id: string;
+  date: string;
+  time: string;
+  name: string;
+  address: string;
+  phone: string;
+  purpose?: string;
+  signatureFileId?: string;
+  signatureUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+  diubah_pada?: string;
+  updatedBy: string;
 }
 
 export interface SystemCheckReport {

@@ -39,6 +39,13 @@ import {
   findBestFaceMatch,
   parseCameraError,
 } from '../../lib/faceDetection.ts';
+import {
+  acquireAccurateLocation,
+  evaluateGeofence,
+  GpsReading,
+  GPS_INACCURATE_MESSAGE,
+  MAX_GPS_AGE_MS,
+} from '../../lib/geolocation.ts';
 import { playSuccessChime, playErrorBeep, speakIndonesian } from '../../lib/soundEffects.ts';
 
 export interface TeacherAttendanceViewProps {
@@ -113,11 +120,12 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     [sessions, activeTeacherSession, wibNowHhMm]
   );
 
-  // Location state
+  // Location state (multi-sample high-accuracy GPS, non-cached)
   const [gpsLoading, setGpsLoading] = useState<boolean>(true);
-  const [currentCoords, setCurrentCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [nearestLocation, setNearestLocation] = useState<{ location: SchoolLocation; distanceMeters: number } | null>(null);
+  const [gpsProgress, setGpsProgress] = useState<{ sampleCount: number; bestAccuracy: number } | null>(null);
+  const [gpsReading, setGpsReading] = useState<GpsReading | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const gpsAbortRef = useRef<AbortController | null>(null);
 
   // Camera & Face state (instant open without loading screen)
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
@@ -230,64 +238,63 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
   }, [loadTeacherHistory, serverVersion]);
 
   const requestLocation = useCallback(() => {
+    if (gpsAbortRef.current) {
+      gpsAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    gpsAbortRef.current = controller;
+
     setGpsLoading(true);
     setGpsError(null);
+    setGpsProgress(null);
 
-    if (!navigator.geolocation) {
-      setGpsError('Perangkat Anda tidak mendukung fitur Geolocation GPS.');
-      setGpsLoading(false);
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setCurrentCoords({ lat: latitude, lng: longitude });
-        setGpsLoading(false);
+    acquireAccurateLocation({
+      stabilizeWindowMs: 6000,
+      timeoutMs: 15000,
+      targetAccuracyMeters: 20,
+      signal: controller.signal,
+      onProgress: (info) => {
+        if (!controller.signal.aborted && mountedRef.current) {
+          setGpsProgress(info);
+        }
       },
-      () => {
+    })
+      .then((reading) => {
+        if (controller.signal.aborted || !mountedRef.current) return;
+        setGpsReading(reading);
         setGpsLoading(false);
-        setGpsError('Gagal mendapatkan lokasi GPS. Pastikan izin lokasi telah aktif.');
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+      })
+      .catch((err: any) => {
+        if (controller.signal.aborted || !mountedRef.current) return;
+        if (err?.message === 'Permintaan lokasi dibatalkan.') return;
+        setGpsLoading(false);
+        setGpsError(
+          err?.message || 'Gagal mendapatkan lokasi GPS. Pastikan izin lokasi aktif dan coba di area terbuka.'
+        );
+      });
   }, []);
 
   useEffect(() => {
     requestLocation();
+    return () => {
+      if (gpsAbortRef.current) {
+        gpsAbortRef.current.abort();
+      }
+    };
   }, [requestLocation]);
 
-  useEffect(() => {
-    const activeLocs = locations.filter((l) => l.isActive);
-    if (!currentCoords || activeLocs.length === 0) return;
-
-    let min = Infinity;
-    let best: SchoolLocation | null = null;
-    const toRad = (x: number) => (x * Math.PI) / 180;
-    const R = 6371e3;
-
-    for (const loc of activeLocs) {
-      const dLat = toRad(loc.latitude - currentCoords.lat);
-      const dLon = toRad(loc.longitude - currentCoords.lng);
-      const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(toRad(currentCoords.lat)) *
-          Math.cos(toRad(loc.latitude)) *
-          Math.sin(dLon / 2) *
-          Math.sin(dLon / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      const dist = Math.round(R * c);
-
-      if (dist < min) {
-        min = dist;
-        best = loc;
-      }
-    }
-
-    if (best) {
-      setNearestLocation({ location: best, distanceMeters: min });
-    }
-  }, [currentCoords, locations]);
+  const geofenceEval = useMemo(
+    () => evaluateGeofence(gpsReading, locations),
+    [gpsReading, locations]
+  );
+  const currentCoords = geofenceEval.userCoords;
+  const nearestLocation = useMemo(() => {
+    if (!geofenceEval.nearestLocation || geofenceEval.distanceMeters === null) return null;
+    return {
+      location: geofenceEval.nearestLocation,
+      distanceMeters: geofenceEval.distanceMeters,
+    };
+  }, [geofenceEval]);
 
   // Keep strict 24-hour WIB clock updated every 1s
   useEffect(() => {
@@ -328,9 +335,8 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
     }, [activeTeacherSession, todayRecord, wibNowHhMm, checkOutTime, earlyCheckoutAutoEnabled]);
 
   const activeLocationsCount = useMemo(() => locations.filter((l) => l.isActive).length, [locations]);
-  const isInsideRadius = nearestLocation
-    ? nearestLocation.distanceMeters <= nearestLocation.location.radiusMeters
-    : activeLocationsCount === 0;
+  const isInsideRadius =
+    activeLocationsCount === 0 || (!gpsLoading && !gpsError && Boolean(gpsReading) && geofenceEval.isValid);
 
   // Refs synced for real-time face detection loop
   const stateRef = useRef({
@@ -434,14 +440,49 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
           return;
         }
 
-        // 1. Verify GPS radius
-        if (nearestLocation && nearestLocation.distanceMeters > nearestLocation.location.radiusMeters) {
-          playErrorBeep();
-          setFeedback({
-            type: 'error',
-            message: `Di luar radius: Jarak Anda ${nearestLocation.distanceMeters}m dari ${nearestLocation.location.name} (Batas: ${nearestLocation.location.radiusMeters}m).`,
-          });
-          return;
+        // 1. Verify GPS freshness, accuracy, and radius strictly
+        if (activeLocationsCount > 0) {
+          if (gpsLoading) {
+            playErrorBeep();
+            setFeedback({
+              type: 'error',
+              message: 'Sedang menstabilkan pembacaan GPS perangkat Anda. Mohon tunggu sebentar lalu coba kembali.',
+            });
+            return;
+          }
+          if (gpsError || !gpsReading) {
+            playErrorBeep();
+            setFeedback({
+              type: 'error',
+              message: gpsError || GPS_INACCURATE_MESSAGE,
+            });
+            return;
+          }
+          const latestEval = evaluateGeofence(gpsReading, locations);
+          if (Date.now() - gpsReading.timestamp > MAX_GPS_AGE_MS) {
+            playErrorBeep();
+            setFeedback({
+              type: 'error',
+              message: 'Pembacaan GPS sudah terlalu lama. Tekan tombol PERBARUI LOKASI untuk mengambil GPS terbaru.',
+            });
+            return;
+          }
+          if (latestEval.status === 'TIDAK AKURAT') {
+            playErrorBeep();
+            setFeedback({
+              type: 'error',
+              message: GPS_INACCURATE_MESSAGE,
+            });
+            return;
+          }
+          if (latestEval.status === 'DI LUAR AREA') {
+            playErrorBeep();
+            setFeedback({
+              type: 'error',
+              message: latestEval.message,
+            });
+            return;
+          }
         }
 
         // 2. Strict biometric face matching against Teacher FaceTemplates
@@ -509,7 +550,10 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
           faceVerified,
           latitude: currentCoords?.lat,
           longitude: currentCoords?.lng,
-          distanceMeters: nearestLocation?.distanceMeters,
+          distanceMeters: geofenceEval.distanceMeters ?? undefined,
+          accuracyMeters: geofenceEval.accuracyMeters ?? undefined,
+          gpsTimestamp: gpsReading?.timestamp,
+          gpsAgeMs: gpsReading ? Math.max(0, Date.now() - gpsReading.timestamp) : undefined,
         });
 
         if (res.success) {
@@ -540,7 +584,12 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
       activeTeacherSession,
       nextTeacherSession,
       wibNowHhMm,
-      nearestLocation,
+      activeLocationsCount,
+      gpsLoading,
+      gpsError,
+      gpsReading,
+      locations,
+      geofenceEval,
       myFaceTemplate,
       teacherFaceTemplates,
       isCameraActive,
@@ -967,57 +1016,129 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-7 space-y-6">
-          {/* GPS Card */}
+          {/* GPS Card + Diagnostik Geofencing */}
           <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Navigation className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">Lokasi Presensi GPS</h3>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Lokasi &amp; Diagnostik GPS</h3>
+                  <p className="text-[11px] text-slate-500">Pembacaan multi-sampel akurasi tinggi (tanpa cache)</p>
+                </div>
               </div>
               <button
+                type="button"
                 onClick={requestLocation}
                 disabled={gpsLoading}
-                className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg transition"
-                title="Perbarui GPS"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-sm disabled:opacity-60 transition cursor-pointer"
+                title="Ambil pembacaan GPS terbaru tanpa cache"
               >
-                <RefreshCw className={`w-4 h-4 ${gpsLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${gpsLoading ? 'animate-spin' : ''}`} />
+                <span>{gpsLoading ? 'MEMPERBARUI...' : 'PERBARUI LOKASI'}</span>
               </button>
             </div>
 
             {gpsLoading ? (
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 text-xs text-slate-500 flex items-center gap-3">
-                <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
-                <span>Mendeteksi koordinat GPS perangkat Anda...</span>
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 space-y-1.5">
+                <div className="flex items-center gap-2.5 font-semibold">
+                  <RefreshCw className="w-4 h-4 animate-spin text-blue-600 flex-shrink-0" />
+                  <span>Menstabilkan sinyal GPS perangkat (pembacaan berulang untuk akurasi terbaik)...</span>
+                </div>
+                {gpsProgress && (
+                  <div className="text-[11px] font-mono text-slate-500 pl-6">
+                    Sampel terkumpul: {gpsProgress.sampleCount} • Akurasi terbaik sementara: ±{gpsProgress.bestAccuracy} meter
+                  </div>
+                )}
               </div>
             ) : gpsError ? (
-              <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
-                {gpsError}
+              <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200 space-y-2">
+                <div className="font-bold flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>Status Lokasi: TIDAK AKURAT / BELUM TERDETEKSI</span>
+                </div>
+                <p>{gpsError}</p>
               </div>
             ) : (
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Titik Sekolah Terdekat:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">
-                    {nearestLocation?.location.name || 'Kampus Sekolah'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Jarak Saat Ini:</span>
-                  <span className="font-mono font-bold text-slate-900 dark:text-white">
-                    {nearestLocation?.distanceMeters ?? '-'} meter
-                  </span>
-                </div>
-                <div className="flex items-center justify-between pt-1 border-t border-slate-200 dark:border-slate-700">
-                  <span className="text-slate-500">Status Radius (Maks {nearestLocation?.location.radiusMeters}m):</span>
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3 text-xs">
+                {/* Status Banner */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-700">
+                  <div>
+                    <div className="text-[11px] text-slate-500">Titik Kantor / Sekolah Acuan</div>
+                    <div className="font-bold text-slate-900 dark:text-white">
+                      {geofenceEval.nearestLocation?.name || (activeLocationsCount === 0 ? 'Belum Ada Geofence Aktif' : 'Kampus Sekolah')}
+                    </div>
+                  </div>
                   <span
-                    className={`font-bold px-2 py-0.5 rounded-md text-[10px] ${
-                      isInsideRadius
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                        : 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                    className={`font-black px-3 py-1 rounded-lg text-[11px] tracking-wide border ${
+                      geofenceEval.status === 'VALID'
+                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800'
+                        : geofenceEval.status === 'TIDAK AKURAT'
+                          ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-800'
+                          : 'bg-rose-100 text-rose-800 border-rose-300 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800'
                     }`}
                   >
-                    {isInsideRadius ? 'Di Dalam Radius (Valid)' : 'Di Luar Radius (Ditolak)'}
+                    STATUS: {geofenceEval.status}
                   </span>
+                </div>
+
+                {geofenceEval.status !== 'VALID' && (
+                  <div
+                    className={`p-3 rounded-xl border font-semibold ${
+                      geofenceEval.status === 'TIDAK AKURAT'
+                        ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-200 dark:border-amber-800'
+                        : 'bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-950/50 dark:text-rose-200 dark:border-rose-800'
+                    }`}
+                  >
+                    {geofenceEval.message}
+                  </div>
+                )}
+
+                {/* 3 Metrik Terpisah: Jarak Aktual, Akurasi GPS, Radius Diizinkan */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                    <div className="text-[10px] text-slate-500 uppercase font-semibold">Jarak ke Kantor</div>
+                    <div className="font-mono font-black text-sm text-slate-900 dark:text-white mt-0.5">
+                      {geofenceEval.distanceMeters !== null ? `${geofenceEval.distanceMeters} m` : '-'}
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                    <div className="text-[10px] text-slate-500 uppercase font-semibold">Akurasi GPS</div>
+                    <div
+                      className={`font-mono font-black text-sm mt-0.5 ${
+                        geofenceEval.accuracyMeters !== null && geofenceEval.accuracyMeters > 100
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-slate-900 dark:text-white'
+                      }`}
+                    >
+                      {geofenceEval.accuracyMeters !== null ? `±${geofenceEval.accuracyMeters} m` : '-'}
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                    <div className="text-[10px] text-slate-500 uppercase font-semibold">Radius Diizinkan</div>
+                    <div className="font-mono font-black text-sm text-slate-900 dark:text-white mt-0.5">
+                      {geofenceEval.allowedRadiusMeters !== null ? `${geofenceEval.allowedRadiusMeters} m` : 'Bebas'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Koordinat Diagnostik: Pengguna & Kantor */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
+                  <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                    <div className="text-slate-500 font-semibold">Koordinat GPS Anda ({gpsReading?.sampleCount || 1} sampel)</div>
+                    <div className="font-mono font-bold text-slate-800 dark:text-slate-200 mt-0.5 select-all">
+                      {geofenceEval.userCoords
+                        ? `${geofenceEval.userCoords.lat.toFixed(6)}, ${geofenceEval.userCoords.lng.toFixed(6)}`
+                        : '-'}
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                    <div className="text-slate-500 font-semibold">Koordinat Titik Kantor</div>
+                    <div className="font-mono font-bold text-slate-800 dark:text-slate-200 mt-0.5 select-all">
+                      {geofenceEval.officeCoords
+                        ? `${geofenceEval.officeCoords.lat.toFixed(6)}, ${geofenceEval.officeCoords.lng.toFixed(6)}`
+                        : '-'}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -1077,22 +1198,32 @@ export const TeacherAttendanceView: React.FC<TeacherAttendanceViewProps> = ({ on
                   onVideoDimensions={(w, h) => setVideoAspect(w / h)}
                 >
                   {matchedTeacherInFrame && (
-                    <div className="absolute bottom-3 left-3 right-3 p-2.5 rounded-xl bg-emerald-600/95 backdrop-blur-md text-white text-left flex items-center justify-between gap-2 shadow-lg border border-emerald-300/50">
+                    <div
+                      className={`absolute bottom-3 left-3 right-3 p-2.5 rounded-xl backdrop-blur-md text-white text-left flex items-center justify-between gap-2 shadow-lg border ${
+                        isInsideRadius
+                          ? 'bg-emerald-600/95 border-emerald-300/50'
+                          : 'bg-amber-600/95 border-amber-300/50'
+                      }`}
+                    >
                       <div className="flex items-center gap-2 min-w-0">
                         <UserCheck className="w-4 h-4 flex-shrink-0" />
                         <div className="min-w-0">
-                          <div className="text-[10px] font-bold uppercase text-emerald-100">Wajah Cocok</div>
+                          <div className="text-[10px] font-bold uppercase opacity-90">
+                            {isInsideRadius ? 'Wajah Cocok' : `Wajah Cocok • GPS ${geofenceEval.status}`}
+                          </div>
                           <div className="text-xs font-black truncate">{matchedTeacherInFrame.name}</div>
                         </div>
                       </div>
                       <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-white/20 flex-shrink-0">
                         {isSubmitting
                           ? 'Menyimpan...'
-                          : activeAutoSession === 'checkIn'
-                          ? 'Auto Masuk'
-                          : activeAutoSession === 'checkOut'
-                          ? 'Auto Pulang'
-                          : 'Terverifikasi'}
+                          : !isInsideRadius
+                            ? geofenceEval.status
+                            : activeAutoSession === 'checkIn'
+                              ? 'Auto Masuk'
+                              : activeAutoSession === 'checkOut'
+                                ? 'Auto Pulang'
+                                : 'Terverifikasi'}
                       </span>
                     </div>
                   )}

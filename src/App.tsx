@@ -29,6 +29,9 @@ const AdminDashboard = lazy(() =>
 const SuperadminDashboard = lazy(() =>
   import('./components/superadmin/SuperadminDashboard.tsx').then((m) => ({ default: m.SuperadminDashboard }))
 );
+const GuestBookView = lazy(() =>
+  import('./components/guest/GuestBookView.tsx').then((m) => ({ default: m.GuestBookView }))
+);
 
 const ViewLoadingFallback: React.FC = () => (
   <div className="max-w-3xl mx-auto px-4 py-12 flex flex-col items-center justify-center gap-3 text-slate-500 dark:text-slate-400">
@@ -130,7 +133,7 @@ function MainApp() {
             <span className="hidden md:inline font-bold text-slate-500 uppercase tracking-wider text-[10px] flex-shrink-0">
               Pilihan Presensi:
             </span>
-            <div className="grid grid-cols-3 sm:inline-flex w-full sm:w-auto rounded-xl p-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 gap-1">
+            <div className="grid grid-cols-2 sm:inline-flex w-full sm:w-auto rounded-xl p-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 gap-1">
               <button
                 onClick={() => setActiveTab('portal')}
                 className={`flex items-center justify-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg font-bold text-[11px] sm:text-xs transition whitespace-nowrap ${
@@ -170,6 +173,18 @@ function MainApp() {
               >
                 <span>👨‍🏫 Guru</span>
                 <span className="hidden sm:inline text-[10px] opacity-75 font-normal">(Wajah + GPS)</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('guest')}
+                className={`flex items-center justify-center gap-1 px-2 sm:px-3 py-1.5 rounded-lg font-bold text-[11px] sm:text-xs transition whitespace-nowrap ${
+                  activeTab === 'guest'
+                    ? 'bg-teal-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-teal-600'
+                }`}
+              >
+                <span>📖 Tamu</span>
+                <span className="hidden sm:inline text-[10px] opacity-75 font-normal">(TTD Digital)</span>
               </button>
             </div>
           </div>
@@ -214,6 +229,7 @@ function MainApp() {
                   handleOpenLogin('teacher');
                 }
               }}
+              onSelectGuestBook={() => setActiveTab('guest')}
               onOpenAdminLogin={() => handleOpenLogin('admin')}
               onOpenTeacherLogin={() => handleOpenLogin('teacher')}
             />
@@ -221,6 +237,10 @@ function MainApp() {
 
           {activeTab === 'kiosk' && (
             <StudentKioskView onReturnToPortal={() => setActiveTab('portal')} />
+          )}
+
+          {activeTab === 'guest' && (
+            <GuestBookView onReturnToPortal={() => setActiveTab('portal')} />
           )}
 
           {activeTab === 'homeroom' && (
@@ -280,7 +300,7 @@ function MainApp() {
             ) : (
               <div className="max-w-md mx-4 sm:mx-auto mt-12 sm:mt-20 text-center p-6 sm:p-8 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">Menu Kepala Sekolah</h3>
-                <p className="text-xs text-slate-500">Silakan login dengan akun Kepala Sekolah atau Admin untuk membuka ringkasan & Cek Sistem.</p>
+                <p className="text-xs text-slate-500">Silakan login dengan akun Kepala Sekolah atau Admin untuk membuka Dashboard Kepala Sekolah &amp; Rekap Presensi.</p>
                 <button
                   onClick={() => handleOpenLogin('admin')}
                   className="px-6 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition"

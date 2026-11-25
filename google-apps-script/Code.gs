@@ -67,7 +67,7 @@ var SHEET_SCHEMAS = {
   ],
   TeacherAttendance: [
     'id', 'teacherId', 'nama', 'nip', 'subject', 'date', 'timeIn', 'timeOut',
-    'status', 'method', 'latitude', 'longitude', 'distanceMeters', 'notes',
+    'status', 'method', 'latitude', 'longitude', 'distanceMeters', 'accuracyMeters', 'gpsStatus', 'notes',
     'createdAt', 'diubah_pada', 'updatedBy'
   ],
   ToiletPermits: [
@@ -82,6 +82,10 @@ var SHEET_SCHEMAS = {
     'id', 'studentId', 'studentName', 'studentNis', 'date', 'category', 'notes',
     'actionPlan', 'status', 'counselorId', 'createdAt', 'diubah_pada', 'updatedBy'
   ],
+  GuestBook: [
+    'id', 'date', 'time', 'name', 'address', 'phone', 'purpose',
+    'signatureFileId', 'signatureUrl', 'status', 'createdAt', 'diubah_pada', 'updatedBy'
+  ],
   Log: [
     'id', 'waktu', 'pengguna', 'aksi', 'entitas', 'id_entitas', 'detail',
     'status', 'diubah_pada'
@@ -95,7 +99,7 @@ var STUDENT_SESSION_ATT_HEADERS = [
 
 var TEACHER_SESSION_ATT_HEADERS = [
   'id', 'sessionId', 'sessionName', 'teacherId', 'nama', 'nip', 'subject', 'date', 'timeIn', 'timeOut',
-  'status', 'method', 'latitude', 'longitude', 'distanceMeters', 'notes',
+  'status', 'method', 'latitude', 'longitude', 'distanceMeters', 'accuracyMeters', 'gpsStatus', 'notes',
   'createdAt', 'diubah_pada', 'updatedBy'
 ];
 
@@ -473,6 +477,10 @@ function doGet(e) {
       return jsonOutput_(handleGetLogs_(ss, Number(params.limit || 100)));
     }
 
+    if (action === 'guestBook') {
+      return jsonOutput_(handleGetGuestBook_(ss, params));
+    }
+
     return jsonOutput_({ success: false, error: 'Aksi GET tidak dikenal: ' + action });
   } catch (err) {
     return jsonOutput_({ success: false, error: 'Server error (doGet): ' + (err && err.message ? err.message : String(err)) });
@@ -618,6 +626,9 @@ function doPost(e) {
       case 'promoteClass':
         result = handlePromoteClass_(ss, payload, actor);
         break;
+      case 'saveGuestEntry':
+        result = handleSaveGuestEntry_(ss, payload, actor);
+        break;
       default:
         result = { success: false, error: 'Aksi POST tidak dikenal: ' + action };
     }
@@ -757,6 +768,7 @@ function ensureDriveFolders_(allowCreateRoot, customFolderName) {
   var cardPhotoFolder = getOrCreateSubfolder_(rootFolder, '03_Foto_Kartu_Siswa');
   var cardAssetsFolder = getOrCreateSubfolder_(rootFolder, '04_Logo_TTD_dan_Aset_Kartu');
   var blobDataFolder = getOrCreateSubfolder_(rootFolder, '05_Data_Sistem_Teks');
+  var guestSignatureFolder = getOrCreateSubfolder_(rootFolder, '06_Tanda_Tangan_Tamu_Sekolah');
 
   return {
     ok: true,
@@ -766,7 +778,8 @@ function ensureDriveFolders_(allowCreateRoot, customFolderName) {
     teacherFaceFolder: teacherFaceFolder,
     cardPhotoFolder: cardPhotoFolder,
     cardAssetsFolder: cardAssetsFolder,
-    blobDataFolder: blobDataFolder
+    blobDataFolder: blobDataFolder,
+    guestSignatureFolder: guestSignatureFolder
   };
 }
 
@@ -826,10 +839,11 @@ function provisionDatabaseResources_(payload, actor) {
       '02_Database_Wajah_Guru',
       '03_Foto_Kartu_Siswa',
       '04_Logo_TTD_dan_Aset_Kartu',
-      '05_Data_Sistem_Teks'
+      '05_Data_Sistem_Teks',
+      '06_Tanda_Tangan_Tamu_Sekolah'
     ],
     message:
-      'Database Google Sheets ("' + ss.getName() + '") & Folder Drive ("' + driveRes.rootFolder.getName() + '") beserta subfolder aset & wajah siap digunakan!'
+      'Database Google Sheets ("' + ss.getName() + '") & Folder Drive ("' + driveRes.rootFolder.getName() + '") beserta subfolder aset, wajah & tanda tangan tamu siap digunakan!'
   };
 }
 
@@ -981,6 +995,8 @@ var TEXT_FORMAT_COLUMNS = {
   phone: true,
   foundationPhone: true,
   date: true,
+  time: true,
+  signatureFileId: true,
   birthDate: true,
   timeIn: true,
   timeOut: true,
@@ -1854,7 +1870,7 @@ function collectRowDriveIds_(headers, rowValues) {
   for (var c = 0; c < rowValues.length; c++) {
     var key = headers[c] || '';
     var raw = rowValues[c];
-    if (key === 'photoFileId' && raw) {
+    if ((key === 'photoFileId' || key === 'signatureFileId') && raw) {
       var directId = String(raw).trim();
       if (directId) collected[directId] = true;
     }
@@ -2080,26 +2096,6 @@ function handleSync_(ss, params) {
   var settings = settingsRows.length > 0 ? formatSettingsRow_(settingsRows[0]) : formatSettingsRow_({});
 
   var rawFaceTemplates = readActiveRows_(ss, 'FaceTemplates');
-  var enrolledSet = {};
-  var faceTemplates = rawFaceTemplates.map(function (f) {
-    var desc = [];
-    try {
-      desc = typeof f.descriptorJson === 'string' && f.descriptorJson ? JSON.parse(f.descriptorJson) : [];
-    } catch (e) { desc = []; }
-    enrolledSet[String(f.personId)] = true;
-    return {
-      id: f.id,
-      personId: f.personId,
-      personType: f.personType || 'student',
-      descriptor: desc,
-      photoFileId: f.photoFileId || '',
-      createdAt: f.createdAt || '',
-      updatedAt: f.diubah_pada || '',
-      diubah_pada: f.diubah_pada || '',
-      updatedBy: f.updatedBy || ''
-    };
-  });
-
   var classes = readActiveRows_(ss, 'Classes').map(function (c) {
     return {
       id: c.id,
@@ -2116,7 +2112,59 @@ function handleSync_(ss, params) {
     };
   });
 
-  var students = readActiveRows_(ss, 'Students').map(function (s) {
+  var rawStudentsRows = readActiveRows_(ss, 'Students');
+  var validStudentIds = {};
+  for (var vs = 0; vs < rawStudentsRows.length; vs++) {
+    validStudentIds[String(rawStudentsRows[vs].id)] = true;
+  }
+
+  var rawUsersRows = readActiveRows_(ss, 'Users')
+    .filter(function (u) {
+      return String(u.role || '').toLowerCase() !== 'superadmin' &&
+        String(u.username || '').toLowerCase() !== 'superadmin';
+    });
+
+  var validTeacherPersonIds = {};
+  var rawTeachersRows = readActiveRows_(ss, 'Teachers');
+  for (var vt = 0; vt < rawTeachersRows.length; vt++) {
+    validTeacherPersonIds[String(rawTeachersRows[vt].id)] = true;
+  }
+  for (var vu = 0; vu < rawUsersRows.length; vu++) {
+    var vuActive = rawUsersRows[vu].isActive === true || String(rawUsersRows[vu].isActive).toLowerCase() === 'true' || rawUsersRows[vu].isActive === '';
+    if (vuActive && isTeacherRosterEligibleRole_(rawUsersRows[vu].role)) {
+      validTeacherPersonIds[String(rawUsersRows[vu].id)] = true;
+    }
+  }
+
+  // Strictly exclude orphaned face templates belonging to deleted students/teachers/users
+  var enrolledSet = {};
+  var faceTemplates = [];
+  for (var ftIdx = 0; ftIdx < rawFaceTemplates.length; ftIdx++) {
+    var f = rawFaceTemplates[ftIdx];
+    var fPid = String(f.personId || '').trim();
+    var fType = String(f.personType || 'student');
+    var isOwnerValid = fType === 'teacher' ? !!validTeacherPersonIds[fPid] : !!validStudentIds[fPid];
+    if (!fPid || !isOwnerValid) continue;
+
+    var desc = [];
+    try {
+      desc = typeof f.descriptorJson === 'string' && f.descriptorJson ? JSON.parse(f.descriptorJson) : [];
+    } catch (e) { desc = []; }
+    enrolledSet[fPid] = true;
+    faceTemplates.push({
+      id: f.id,
+      personId: f.personId,
+      personType: fType,
+      descriptor: desc,
+      photoFileId: f.photoFileId || '',
+      createdAt: f.createdAt || '',
+      updatedAt: f.diubah_pada || '',
+      diubah_pada: f.diubah_pada || '',
+      updatedBy: f.updatedBy || ''
+    });
+  }
+
+  var students = rawStudentsRows.map(function (s) {
     var active = s.isActive === true || String(s.isActive).toLowerCase() === 'true' || s.isActive === '';
     return {
       id: s.id,
@@ -2143,7 +2191,7 @@ function handleSync_(ss, params) {
     };
   });
 
-  var teachers = readActiveRows_(ss, 'Teachers').map(function (t) {
+  var teachers = rawTeachersRows.map(function (t) {
     var active = t.isActive === true || String(t.isActive).toLowerCase() === 'true' || t.isActive === '';
     return {
       id: t.id,
@@ -2162,12 +2210,15 @@ function handleSync_(ss, params) {
   });
 
   var locations = readActiveRows_(ss, 'Locations').map(function (l) {
+    var locLat = parseGeoNumber_(l.latitude);
+    var locLng = parseGeoNumber_(l.longitude);
+    var locRad = parseGeoNumber_(l.radiusMeters);
     return {
       id: l.id,
       name: l.name,
-      latitude: Number(l.latitude || 0),
-      longitude: Number(l.longitude || 0),
-      radiusMeters: Number(l.radiusMeters || 150),
+      latitude: isNaN(locLat) ? 0 : locLat,
+      longitude: isNaN(locLng) ? 0 : locLng,
+      radiusMeters: isNaN(locRad) || locRad < 10 ? 150 : Math.round(locRad),
       isActive: l.isActive === true || String(l.isActive).toLowerCase() === 'true' || l.isActive === '',
       createdAt: l.createdAt || '',
       updatedAt: l.diubah_pada || '',
@@ -2279,16 +2330,11 @@ function handleSync_(ss, params) {
     return y.exceededCount - x.exceededCount;
   }).slice(0, 20);
 
-  var rawUsersRows = readActiveRows_(ss, 'Users')
-    .filter(function (u) {
-      return String(u.role || '').toLowerCase() !== 'superadmin' &&
-        String(u.username || '').toLowerCase() !== 'superadmin';
-    });
-
-  // Ensure every active Kepala Sekolah, Guru, Wali Kelas, BK, Kesiswaan, Admin user also appears in teachers roster if unsynced
+  // Only inject ACTIVE eligible Users into teachers roster if not yet represented in Teachers sheet
   for (var ru = 0; ru < rawUsersRows.length; ru++) {
     var uRow = rawUsersRows[ru];
-    if (!isTeacherRosterEligibleRole_(uRow.role)) continue;
+    var uActive = uRow.isActive === true || String(uRow.isActive).toLowerCase() === 'true' || uRow.isActive === '';
+    if (!uActive || !isTeacherRosterEligibleRole_(uRow.role)) continue;
     var uNipStr = String(uRow.nip || '').trim();
     var uEmailStr = String(uRow.email || '').trim().toLowerCase();
     var uNameStr = String(uRow.name || '').trim().toLowerCase();
@@ -2303,7 +2349,6 @@ function handleSync_(ss, params) {
       }
     }
     if (!matchedInTeachers) {
-      var uActive = uRow.isActive === true || String(uRow.isActive).toLowerCase() === 'true' || uRow.isActive === '';
       teachers.push({
         id: String(uRow.id),
         nip: uNipStr,
@@ -2311,7 +2356,7 @@ function handleSync_(ss, params) {
         email: uRow.email || '',
         phone: '',
         subject: defaultTeacherSubjectForRole_(uRow.role),
-        isActive: uActive,
+        isActive: true,
         hasFaceEnrolled: !!enrolledSet[String(uRow.id)],
         createdAt: uRow.createdAt || '',
         updatedAt: uRow.diubah_pada || '',
@@ -2373,6 +2418,10 @@ function handleSync_(ss, params) {
     };
   }).reverse();
 
+  var guestBook = readActiveRows_(ss, 'GuestBook').slice(-250).reverse().map(function (gb) {
+    return formatGuestBookRow_(gb);
+  });
+
   return {
     success: true,
     hasChanges: true,
@@ -2395,7 +2444,8 @@ function handleSync_(ss, params) {
     frequentToiletStudents: frequentToiletStudents,
     users: users,
     auditLogs: recentLogs,
-    followUpNotes: followUpNotes
+    followUpNotes: followUpNotes,
+    guestBook: guestBook
   };
 }
 
@@ -2419,21 +2469,56 @@ function defaultTeacherSubjectForRole_(role) {
 }
 
 function findMatchingTeacherRow_(teachersList, candidate) {
-  if (!candidate) return null;
+  var matches = findAllMatchingTeacherRows_(teachersList, candidate);
+  return matches.length > 0 ? matches[0] : null;
+}
+
+function findAllMatchingTeacherRows_(teachersList, candidate) {
+  if (!candidate) return [];
+  var uId = String(candidate.id || '').trim();
+  var uTeacherId = String(candidate.teacherId || '').trim();
   var uNip = String(candidate.nip || '').trim();
   var uEmail = String(candidate.email || '').trim().toLowerCase();
   var uName = String(candidate.name || '').trim().toLowerCase();
+  var matches = [];
   for (var i = 0; i < teachersList.length; i++) {
     var t = teachersList[i];
     if (
+      (uId && String(t.id || '').trim() === uId) ||
+      (uTeacherId && String(t.id || '').trim() === uTeacherId) ||
       (uNip && String(t.nip || '').trim() === uNip) ||
       (uEmail && String(t.email || '').trim().toLowerCase() === uEmail) ||
       (uName && String(t.name || '').trim().toLowerCase() === uName)
     ) {
-      return t;
+      matches.push(t);
     }
   }
-  return null;
+  return matches;
+}
+
+function findAllMatchingUserRows_(usersList, candidate) {
+  if (!candidate) return [];
+  var tId = String(candidate.id || '').trim();
+  var tNip = String(candidate.nip || '').trim();
+  var tEmail = String(candidate.email || '').trim().toLowerCase();
+  var tName = String(candidate.name || '').trim().toLowerCase();
+  var matches = [];
+  for (var i = 0; i < usersList.length; i++) {
+    var u = usersList[i];
+    if (String(u.role || '').toLowerCase() === 'superadmin' ||
+        String(u.username || '').toLowerCase() === 'superadmin') {
+      continue;
+    }
+    if (
+      (tId && String(u.id || '').trim() === tId) ||
+      (tNip && String(u.nip || '').trim() === tNip) ||
+      (tEmail && String(u.email || '').trim().toLowerCase() === tEmail) ||
+      (tName && String(u.name || '').trim().toLowerCase() === tName)
+    ) {
+      matches.push(u);
+    }
+  }
+  return matches;
 }
 
 function syncUserToTeacherRecord_(ss, userObj, subjectOverride, actor, prevUserObj) {
@@ -2916,29 +3001,18 @@ function handleTeacherAttendance_(ss, payload, actor) {
       };
     }
 
-    // Optional GPS validation if coordinates & active locations exist
-    var distanceMeters = payload.distanceMeters !== undefined ? Number(payload.distanceMeters) : '';
-    var lat = payload.latitude !== undefined ? Number(payload.latitude) : '';
-    var lng = payload.longitude !== undefined ? Number(payload.longitude) : '';
-
-    var locations = readActiveRows_(ss, 'Locations').filter(function (l) {
-      return l.isActive === true || String(l.isActive).toLowerCase() === 'true';
-    });
-    if (locations.length > 0 && lat !== '' && lng !== '') {
-      var minD = Infinity;
-      var bestLoc = null;
-      for (var li = 0; li < locations.length; li++) {
-        var d = haversineMeters_(lat, lng, Number(locations[li].latitude), Number(locations[li].longitude));
-        if (d < minD) { minD = d; bestLoc = locations[li]; }
-      }
-      distanceMeters = Math.round(minD);
-      if (bestLoc && distanceMeters > Number(bestLoc.radiusMeters || 150)) {
-        return {
-          success: false,
-          mutated: false,
-          error: 'Di luar radius sekolah (' + distanceMeters + 'm dari ' + bestLoc.name + ', batas ' + bestLoc.radiusMeters + 'm).'
-        };
-      }
+    var geoCheckIn = validateTeacherGeofence_(ss, payload);
+    if (!geoCheckIn.valid) {
+      return {
+        success: false,
+        mutated: false,
+        gpsStatus: geoCheckIn.gpsStatus,
+        distanceMeters: geoCheckIn.distanceMeters,
+        accuracyMeters: geoCheckIn.accuracyMeters,
+        allowedRadiusMeters: geoCheckIn.allowedRadiusMeters,
+        locationName: geoCheckIn.locationName || '',
+        error: geoCheckIn.error
+      };
     }
 
     var status = parts.hhmm > cutoff ? 'Terlambat' : 'Tepat Waktu';
@@ -2956,9 +3030,11 @@ function handleTeacherAttendance_(ss, payload, actor) {
       timeOut: '',
       status: status,
       method: payload.faceVerified ? 'FACE_SCAN' : 'MANUAL',
-      latitude: lat,
-      longitude: lng,
-      distanceMeters: distanceMeters,
+      latitude: geoCheckIn.lat !== '' ? geoCheckIn.lat : '',
+      longitude: geoCheckIn.lng !== '' ? geoCheckIn.lng : '',
+      distanceMeters: geoCheckIn.distanceMeters !== '' ? geoCheckIn.distanceMeters : '',
+      accuracyMeters: geoCheckIn.accuracyMeters !== '' ? geoCheckIn.accuracyMeters : '',
+      gpsStatus: geoCheckIn.gpsStatus || 'VALID',
       notes: String(payload.notes || ''),
       createdAt: parts.iso,
       diubah_pada: parts.iso,
@@ -2966,7 +3042,15 @@ function handleTeacherAttendance_(ss, payload, actor) {
     };
 
     appendObjectRow_(attSheet, targetSession.sheetName, rowObj);
-    writeAuditLog_(ss, actor, 'TEACHER_CHECKIN', targetSession.sheetName, newId, teacherName + ' (NIP: ' + (teacherNip || '-') + ') masuk ' + targetSession.name + ' ' + parts.time + ' (' + status + ')');
+    writeAuditLog_(
+      ss,
+      actor,
+      'TEACHER_CHECKIN',
+      targetSession.sheetName,
+      newId,
+      teacherName + ' (NIP: ' + (teacherNip || '-') + ') masuk ' + targetSession.name + ' ' + parts.time + ' (' + status + ')' +
+        (geoCheckIn.distanceMeters !== '' ? (' | Jarak: ' + geoCheckIn.distanceMeters + 'm, Akurasi: ±' + (geoCheckIn.accuracyMeters || '-') + 'm') : '')
+    );
 
     return {
       success: true,
@@ -2982,7 +3066,10 @@ function handleTeacherAttendance_(ss, payload, actor) {
         date: rowObj.date,
         timeIn: rowObj.timeIn,
         status: rowObj.status,
-        method: rowObj.method
+        method: rowObj.method,
+        distanceMeters: geoCheckIn.distanceMeters !== '' ? geoCheckIn.distanceMeters : undefined,
+        accuracyMeters: geoCheckIn.accuracyMeters !== '' ? geoCheckIn.accuracyMeters : undefined,
+        gpsStatus: rowObj.gpsStatus
       }
     };
   }
@@ -2998,13 +3085,35 @@ function handleTeacherAttendance_(ss, payload, actor) {
       return { success: false, mutated: false, error: 'Presensi pulang ' + targetSession.name + ' sudah tercatat pada ' + todayRow.timeOut + ' WIB.' };
     }
 
+    var geoCheckOut = validateTeacherGeofence_(ss, payload);
+    if (!geoCheckOut.valid) {
+      return {
+        success: false,
+        mutated: false,
+        gpsStatus: geoCheckOut.gpsStatus,
+        distanceMeters: geoCheckOut.distanceMeters,
+        accuracyMeters: geoCheckOut.accuracyMeters,
+        allowedRadiusMeters: geoCheckOut.allowedRadiusMeters,
+        locationName: geoCheckOut.locationName || '',
+        error: geoCheckOut.error
+      };
+    }
+
     var updOut = updateRowCellsById_(attSheet, targetSession.sheetName, todayRow.id, {
       timeOut: parts.time,
       updatedBy: actor
     });
     if (!updOut.success) return { success: false, mutated: false, error: updOut.error };
 
-    writeAuditLog_(ss, actor, 'TEACHER_CHECKOUT', targetSession.sheetName, todayRow.id, teacherName + ' (NIP: ' + (teacherNip || '-') + ') pulang ' + targetSession.name + ' ' + parts.time);
+    writeAuditLog_(
+      ss,
+      actor,
+      'TEACHER_CHECKOUT',
+      targetSession.sheetName,
+      todayRow.id,
+      teacherName + ' (NIP: ' + (teacherNip || '-') + ') pulang ' + targetSession.name + ' ' + parts.time +
+        (geoCheckOut.distanceMeters !== '' ? (' | Jarak: ' + geoCheckOut.distanceMeters + 'm, Akurasi: ±' + (geoCheckOut.accuracyMeters || '-') + 'm') : '')
+    );
     return {
       success: true,
       message: 'Presensi pulang ' + targetSession.name + ' berhasil dicatat pada ' + parts.time + ' WIB.'
@@ -3033,6 +3142,8 @@ function handleTeacherAttendance_(ss, payload, actor) {
       latitude: '',
       longitude: '',
       distanceMeters: '',
+      accuracyMeters: '',
+      gpsStatus: '',
       notes: String(payload.notes || ''),
       createdAt: parts.iso,
       diubah_pada: parts.iso,
@@ -3047,6 +3158,143 @@ function handleTeacherAttendance_(ss, payload, actor) {
   }
 
   return { success: false, mutated: false, error: 'actionType guru tidak dikenal.' };
+}
+
+function parseGeoNumber_(raw) {
+  if (raw === undefined || raw === null || raw === '') return NaN;
+  if (typeof raw === 'number') return isFinite(raw) ? raw : NaN;
+  var str = String(raw).trim().replace(',', '.');
+  if (!str) return NaN;
+  var num = Number(str);
+  return isFinite(num) ? num : NaN;
+}
+
+function isValidGeoLatLng_(lat, lng) {
+  if (isNaN(lat) || isNaN(lng) || !isFinite(lat) || !isFinite(lng)) return false;
+  if (lat < -90 || lat > 90) return false;
+  if (lng < -180 || lng > 180) return false;
+  if (lat === 0 && lng === 0) return false;
+  return true;
+}
+
+function validateTeacherGeofence_(ss, payload) {
+  var MAX_GPS_ACCURACY_METERS = 100;
+  var MAX_GPS_AGE_MS = 10 * 60 * 1000;
+  var locations = readActiveRows_(ss, 'Locations').filter(function (l) {
+    var active = l.isActive === true || String(l.isActive).toLowerCase() === 'true' || l.isActive === '';
+    if (!active) return false;
+    var locLat = parseGeoNumber_(l.latitude);
+    var locLng = parseGeoNumber_(l.longitude);
+    return isValidGeoLatLng_(locLat, locLng);
+  });
+
+  var lat = parseGeoNumber_(payload.latitude);
+  var lng = parseGeoNumber_(payload.longitude);
+  var acc = parseGeoNumber_(payload.accuracyMeters);
+  var gpsAgeMs = parseGeoNumber_(payload.gpsAgeMs);
+
+  if (locations.length === 0) {
+    return {
+      valid: true,
+      gpsStatus: 'VALID',
+      lat: isValidGeoLatLng_(lat, lng) ? lat : '',
+      lng: isValidGeoLatLng_(lat, lng) ? lng : '',
+      distanceMeters: '',
+      accuracyMeters: !isNaN(acc) ? Math.round(acc) : '',
+      allowedRadiusMeters: null,
+      locationName: ''
+    };
+  }
+
+  if (!isValidGeoLatLng_(lat, lng)) {
+    return {
+      valid: false,
+      gpsStatus: 'TIDAK AKURAT',
+      distanceMeters: null,
+      accuracyMeters: !isNaN(acc) ? Math.round(acc) : null,
+      allowedRadiusMeters: null,
+      locationName: locations[0].name || '',
+      error: 'Lokasi GPS belum akurat atau belum terbaca. Silakan tekan PERBARUI LOKASI di dekat area terbuka.'
+    };
+  }
+
+  if (!isNaN(gpsAgeMs) && gpsAgeMs > MAX_GPS_AGE_MS) {
+    return {
+      valid: false,
+      gpsStatus: 'TIDAK AKURAT',
+      distanceMeters: null,
+      accuracyMeters: !isNaN(acc) ? Math.round(acc) : null,
+      allowedRadiusMeters: null,
+      locationName: locations[0].name || '',
+      error: 'Data lokasi GPS sudah kedaluwarsa. Silakan tekan PERBARUI LOKASI di dekat area terbuka.'
+    };
+  }
+
+  var minD = Infinity;
+  var bestLoc = null;
+  var bestLat = 0;
+  var bestLng = 0;
+  for (var li = 0; li < locations.length; li++) {
+    var tLat = parseGeoNumber_(locations[li].latitude);
+    var tLng = parseGeoNumber_(locations[li].longitude);
+    var d = haversineMeters_(lat, lng, tLat, tLng);
+    if (d < minD) {
+      minD = d;
+      bestLoc = locations[li];
+      bestLat = tLat;
+      bestLng = tLng;
+    }
+  }
+
+  var distanceMeters = Math.round(minD);
+  var allowedRadiusMeters = Math.round(parseGeoNumber_(bestLoc.radiusMeters) || 150);
+  var accRounded = !isNaN(acc) ? Math.round(acc) : null;
+
+  var isAccuracyTooPoor = isNaN(acc) || acc <= 0 || accRounded > MAX_GPS_ACCURACY_METERS;
+  var isBoundaryAmbiguous =
+    accRounded !== null &&
+    distanceMeters > allowedRadiusMeters &&
+    accRounded > 40 &&
+    (distanceMeters - accRounded) <= allowedRadiusMeters;
+
+  if (isAccuracyTooPoor || isBoundaryAmbiguous) {
+    return {
+      valid: false,
+      gpsStatus: 'TIDAK AKURAT',
+      distanceMeters: distanceMeters,
+      accuracyMeters: accRounded,
+      allowedRadiusMeters: allowedRadiusMeters,
+      locationName: bestLoc.name || '',
+      userCoords: { lat: lat, lng: lng },
+      officeCoords: { lat: bestLat, lng: bestLng },
+      error: 'Lokasi GPS belum akurat, silakan coba kembali di dekat area terbuka.'
+    };
+  }
+
+  if (distanceMeters > allowedRadiusMeters) {
+    return {
+      valid: false,
+      gpsStatus: 'DI LUAR AREA',
+      distanceMeters: distanceMeters,
+      accuracyMeters: accRounded,
+      allowedRadiusMeters: allowedRadiusMeters,
+      locationName: bestLoc.name || '',
+      userCoords: { lat: lat, lng: lng },
+      officeCoords: { lat: bestLat, lng: bestLng },
+      error: 'Di luar radius sekolah (' + distanceMeters + 'm dari ' + bestLoc.name + ', batas ' + allowedRadiusMeters + 'm).'
+    };
+  }
+
+  return {
+    valid: true,
+    gpsStatus: 'VALID',
+    lat: lat,
+    lng: lng,
+    distanceMeters: distanceMeters,
+    accuracyMeters: accRounded,
+    allowedRadiusMeters: allowedRadiusMeters,
+    locationName: bestLoc.name || ''
+  };
 }
 
 function haversineMeters_(lat1, lon1, lat2, lon2) {
@@ -3667,6 +3915,29 @@ function handleCreateGeneric_(ss, entity, data, actor) {
     obj.isActive = data.isActive === undefined ? true : !!data.isActive;
   }
 
+  if (entity === 'Locations') {
+    var locName = String(data.name || '').trim();
+    var cLat = parseGeoNumber_(data.latitude);
+    var cLng = parseGeoNumber_(data.longitude);
+    var cRad = parseGeoNumber_(data.radiusMeters);
+    if (!locName) {
+      return { success: false, mutated: false, error: 'Nama titik lokasi wajib diisi.' };
+    }
+    if (!isValidGeoLatLng_(cLat, cLng)) {
+      return { success: false, mutated: false, error: 'Koordinat lokasi tidak valid. Pastikan Latitude (-90 s/d 90) dan Longitude (-180 s/d 180) benar.' };
+    }
+    if (cLat > 20 && cLng < 20) {
+      return { success: false, mutated: false, error: 'Koordinat Latitude & Longitude terlihat tertukar.' };
+    }
+    if (isNaN(cRad) || cRad < 10) {
+      return { success: false, mutated: false, error: 'Radius lokasi minimal 10 meter.' };
+    }
+    obj.name = locName;
+    obj.latitude = cLat;
+    obj.longitude = cLng;
+    obj.radiusMeters = Math.round(cRad);
+  }
+
   if (entity === 'FollowUpNotes') {
     var students = readActiveRows_(ss, 'Students');
     for (var f = 0; f < students.length; f++) {
@@ -3931,6 +4202,28 @@ function handleUpdateGeneric_(ss, entity, id, data, expectedUpdatedAt, actor) {
     }
   }
 
+  if (entity === 'Locations') {
+    if (patch.hasOwnProperty('latitude') || patch.hasOwnProperty('longitude')) {
+      var uLat = parseGeoNumber_(patch.latitude);
+      var uLng = parseGeoNumber_(patch.longitude);
+      if (!isValidGeoLatLng_(uLat, uLng)) {
+        return { success: false, mutated: false, error: 'Koordinat lokasi tidak valid. Pastikan Latitude (-90 s/d 90) dan Longitude (-180 s/d 180) benar.' };
+      }
+      if (uLat > 20 && uLng < 20) {
+        return { success: false, mutated: false, error: 'Koordinat Latitude & Longitude terlihat tertukar.' };
+      }
+      patch.latitude = uLat;
+      patch.longitude = uLng;
+    }
+    if (patch.hasOwnProperty('radiusMeters')) {
+      var uRad = parseGeoNumber_(patch.radiusMeters);
+      if (isNaN(uRad) || uRad < 10) {
+        return { success: false, mutated: false, error: 'Radius lokasi minimal 10 meter.' };
+      }
+      patch.radiusMeters = Math.round(uRad);
+    }
+  }
+
   var res = updateRowCellsById_(sheet, entity, id, patch, expectedUpdatedAt);
   if (!res.success) {
     return { success: false, mutated: false, conflict: res.conflict, error: res.error };
@@ -4010,6 +4303,63 @@ function sweepLegacyDeletedRowsOnSheet_(sheet, schemaName) {
   return trashed;
 }
 
+function unlinkDeletedTeachersFromClasses_(ss, deletedIdMap, actor) {
+  var clsSheet = ss.getSheetByName('Classes');
+  if (!clsSheet) return;
+  var classes = readActiveRows_(ss, 'Classes');
+  for (var i = 0; i < classes.length; i++) {
+    var hrId = String(classes[i].homeRoomTeacherId || '').trim();
+    if (hrId && deletedIdMap[hrId]) {
+      updateRowCellsById_(clsSheet, 'Classes', classes[i].id, {
+        homeRoomTeacherId: '',
+        homeRoomTeacherName: '',
+        updatedBy: actor
+      }, null);
+    }
+  }
+}
+
+function sweepOrphanedFaceTemplates_(ss) {
+  var faceSheet = ss.getSheetByName('FaceTemplates');
+  if (!faceSheet || faceSheet.getLastRow() <= 1) return 0;
+
+  var validStudents = {};
+  var stdRows = readActiveRows_(ss, 'Students');
+  for (var si = 0; si < stdRows.length; si++) validStudents[String(stdRows[si].id)] = true;
+
+  var validTeachers = {};
+  var tchRows = readActiveRows_(ss, 'Teachers');
+  for (var ti = 0; ti < tchRows.length; ti++) validTeachers[String(tchRows[ti].id)] = true;
+  var usrRows = readActiveRows_(ss, 'Users');
+  for (var ui = 0; ui < usrRows.length; ui++) {
+    var uAct = usrRows[ui].isActive === true || String(usrRows[ui].isActive).toLowerCase() === 'true' || usrRows[ui].isActive === '';
+    if (uAct && isTeacherRosterEligibleRole_(usrRows[ui].role)) {
+      validTeachers[String(usrRows[ui].id)] = true;
+    }
+  }
+
+  var headers = getHeaders_(faceSheet, 'FaceTemplates');
+  var vals = faceSheet.getRange(2, 1, faceSheet.getLastRow() - 1, headers.length).getValues();
+  var pidCol = headers.indexOf('personId');
+  var ptypeCol = headers.indexOf('personType');
+  if (pidCol < 0) return 0;
+
+  var trashed = 0;
+  for (var r = vals.length - 1; r >= 0; r--) {
+    var rowPid = String(vals[r][pidCol] || '').trim();
+    var rowPtype = ptypeCol >= 0 ? String(vals[r][ptypeCol] || 'student') : 'student';
+    var ok = rowPid && (rowPtype === 'teacher' ? !!validTeachers[rowPid] : !!validStudents[rowPid]);
+    if (!ok) {
+      var driveIds = collectRowDriveIds_(headers, vals[r]);
+      for (var d = 0; d < driveIds.length; d++) {
+        if (trashDriveFileSafely_(driveIds[d])) trashed++;
+      }
+      faceSheet.deleteRow(r + 2);
+    }
+  }
+  return trashed;
+}
+
 function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
   if (!SHEET_SCHEMAS[entity]) {
     return { success: false, mutated: false, error: 'Entitas tidak dikenal: ' + entity };
@@ -4039,6 +4389,9 @@ function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
   var rowIndex = findRowById_(sheet, id);
   if (rowIndex === -1) {
     sweepLegacyDeletedRowsOnSheet_(sheet, entity);
+    if (entity === 'Users' || entity === 'Teachers' || entity === 'Students') {
+      sweepOrphanedFaceTemplates_(ss);
+    }
     return { success: true, mutated: false, alreadyDeleted: true, message: 'Data sudah tidak ada atau sudah terhapus.' };
   }
   var headers = getHeaders_(sheet, entity);
@@ -4051,19 +4404,58 @@ function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
   var totalTrashed = 0;
 
   if (entity === 'Students') {
-    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'student');
+    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, null);
   } else if (entity === 'Teachers') {
-    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'teacher');
-  } else if (entity === 'Users') {
-    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, 'teacher');
-    var matchedTchOnDelete = findMatchingTeacherRow_(readActiveRows_(ss, 'Teachers'), rowMap);
-    if (matchedTchOnDelete) {
-      totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, matchedTchOnDelete.id, 'teacher');
-      var tchSheetDel = ss.getSheetByName('Teachers');
-      if (tchSheetDel) {
-        softDeleteRowById_(tchSheetDel, 'Teachers', matchedTchOnDelete.id, null, actor);
+    var deletedTeacherIdsMap = {};
+    deletedTeacherIdsMap[String(id)] = true;
+    var tchSheetDirect = ss.getSheetByName('Teachers');
+    var allMatchedTch = findAllMatchingTeacherRows_(readActiveRows_(ss, 'Teachers'), rowMap);
+    for (var amti = 0; amti < allMatchedTch.length; amti++) {
+      var mTchId = String(allMatchedTch[amti].id || '').trim();
+      if (mTchId) {
+        deletedTeacherIdsMap[mTchId] = true;
+        totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, mTchId, null);
+        if (mTchId !== String(id) && tchSheetDirect) {
+          var dupTchRes = softDeleteRowById_(tchSheetDirect, 'Teachers', mTchId, null, actor);
+          totalTrashed += (dupTchRes.trashedFiles || 0);
+        }
       }
     }
+    var pairedUsers = findAllMatchingUserRows_(readActiveRows_(ss, 'Users'), rowMap);
+    var usrSheetDirect = ss.getSheetByName('Users');
+    for (var pui = 0; pui < pairedUsers.length; pui++) {
+      var pUid = String(pairedUsers[pui].id || '').trim();
+      if (pUid) {
+        deletedTeacherIdsMap[pUid] = true;
+        totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, pUid, null);
+        if (usrSheetDirect) {
+          var uDelRes = softDeleteRowById_(usrSheetDirect, 'Users', pUid, null, actor);
+          totalTrashed += (uDelRes.trashedFiles || 0);
+        }
+      }
+    }
+    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, null);
+    unlinkDeletedTeachersFromClasses_(ss, deletedTeacherIdsMap, actor);
+  } else if (entity === 'Users') {
+    var deletedUserRelatedIds = {};
+    deletedUserRelatedIds[String(id)] = true;
+    if (rowMap.teacherId) deletedUserRelatedIds[String(rowMap.teacherId)] = true;
+    totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, id, null);
+
+    var matchedTeachersOnDelete = findAllMatchingTeacherRows_(readActiveRows_(ss, 'Teachers'), rowMap);
+    var tchSheetDel = ss.getSheetByName('Teachers');
+    for (var mti = 0; mti < matchedTeachersOnDelete.length; mti++) {
+      var tDelId = String(matchedTeachersOnDelete[mti].id || '').trim();
+      if (tDelId) {
+        deletedUserRelatedIds[tDelId] = true;
+        totalTrashed += deleteMatchingFaceTemplatesAndDrive_(ss, tDelId, null);
+        if (tchSheetDel) {
+          var tDelRes = softDeleteRowById_(tchSheetDel, 'Teachers', tDelId, null, actor);
+          totalTrashed += (tDelRes.trashedFiles || 0);
+        }
+      }
+    }
+    unlinkDeletedTeachersFromClasses_(ss, deletedUserRelatedIds, actor);
   } else if (entity === 'FaceTemplates') {
     var fPid = String(rowMap.personId || '').trim();
     var fPtype = String(rowMap.personType || 'student');
@@ -4097,6 +4489,9 @@ function handleSoftDeleteGeneric_(ss, entity, id, expectedUpdatedAt, actor) {
   }
   totalTrashed += (delRes.trashedFiles || 0);
   totalTrashed += sweepLegacyDeletedRowsOnSheet_(sheet, entity);
+  if (entity === 'Users' || entity === 'Teachers' || entity === 'Students') {
+    totalTrashed += sweepOrphanedFaceTemplates_(ss);
+  }
 
   if (entity === 'Students') {
     syncSingleStudentInLevelSheets_(ss, id, true);
@@ -4464,9 +4859,11 @@ function handleGetTeacherHistory_(ss, params) {
         timeOut: row.timeOut ? String(row.timeOut) : '',
         status: row.status,
         method: row.method || 'FACE_SCAN',
-        latitude: row.latitude !== '' ? Number(row.latitude) : undefined,
-        longitude: row.longitude !== '' ? Number(row.longitude) : undefined,
+        latitude: row.latitude !== '' ? parseGeoNumber_(row.latitude) : undefined,
+        longitude: row.longitude !== '' ? parseGeoNumber_(row.longitude) : undefined,
         distanceMeters: row.distanceMeters !== '' ? Number(row.distanceMeters) : undefined,
+        accuracyMeters: row.accuracyMeters !== '' && row.accuracyMeters !== undefined ? Number(row.accuracyMeters) : undefined,
+        gpsStatus: row.gpsStatus || undefined,
         notes: row.notes || '',
         createdAt: row.createdAt || '',
         updatedAt: row.diubah_pada || '',
@@ -4498,7 +4895,10 @@ function handleGetTeacherRecap_(ss, params) {
 
   var rangeStart = targetDate;
   var rangeEnd = targetDate;
-  if (period === 'weekly') {
+  if (period === 'range' && (params.startDate || params.endDate)) {
+    rangeStart = String(params.startDate || targetDate);
+    rangeEnd = String(params.endDate || rangeStart);
+  } else if (period === 'weekly') {
     var dParts = targetDate.split('-').map(Number);
     var dt = new Date(Date.UTC(dParts[0], dParts[1] - 1, dParts[2]));
     var diffToMon = (dt.getUTCDay() + 6) % 7;
@@ -4533,6 +4933,11 @@ function handleGetTeacherRecap_(ss, params) {
         timeOut: r.timeOut ? String(r.timeOut) : '',
         status: r.status,
         method: r.method || '',
+        latitude: r.latitude !== '' && r.latitude !== undefined ? parseGeoNumber_(r.latitude) : undefined,
+        longitude: r.longitude !== '' && r.longitude !== undefined ? parseGeoNumber_(r.longitude) : undefined,
+        distanceMeters: r.distanceMeters !== '' && r.distanceMeters !== undefined ? Number(r.distanceMeters) : undefined,
+        accuracyMeters: r.accuracyMeters !== '' && r.accuracyMeters !== undefined ? Number(r.accuracyMeters) : undefined,
+        gpsStatus: r.gpsStatus || undefined,
         notes: r.notes || ''
       });
     }
@@ -4702,24 +5107,29 @@ function handleGetStudentRecap_(ss, params) {
 
   var classSummaries = classes.map(function (c) {
     var clsStudents = students.filter(function (s) { return String(s.classId) === String(c.id); });
-    var hadir = 0, terlambat = 0, alpa = 0;
+    var hadir = 0, terlambat = 0, izin = 0, sakit = 0, alpa = 0;
     for (var ci = 0; ci < clsStudents.length; ci++) {
       var recs = attByStudent[clsStudents[ci].id] || [];
       for (var ri = 0; ri < recs.length; ri++) {
         if (recs[ri].status === 'Hadir') hadir++;
         else if (recs[ri].status === 'Terlambat') terlambat++;
+        else if (recs[ri].status === 'Izin') izin++;
+        else if (recs[ri].status === 'Sakit') sakit++;
         else if (recs[ri].status === 'Alpa') alpa++;
       }
     }
-    var total = hadir + terlambat + alpa;
+    var total = hadir + terlambat + izin + sakit + alpa;
     return {
       classId: c.id,
       className: c.name,
       totalStudents: clsStudents.length,
       hadir: hadir,
       terlambat: terlambat,
+      izin: izin,
+      sakit: sakit,
       alpa: alpa,
-      attendanceRate: total > 0 ? Math.round(((hadir + terlambat) / total) * 100) : 100
+      totalRecorded: total,
+      attendanceRate: total > 0 ? Math.round(((hadir + terlambat) / total) * 100) : 0
     };
   });
 
@@ -4818,4 +5228,142 @@ function handleGetLogs_(ss, limit) {
     };
   });
   return { success: true, data: sliced };
+}
+
+// ============================================================================
+// BUKU TAMU SEKOLAH (Google Sheets + Drive Digital Signature Storage)
+// ============================================================================
+
+function formatGuestBookRow_(gb) {
+  var fileId = String(gb.signatureFileId || '').trim();
+  var sigUrl = fileId ? ('gas-photo://' + fileId) : String(gb.signatureUrl || '');
+  return {
+    id: gb.id,
+    date: String(gb.date || ''),
+    time: padHhMm_(gb.time, String(gb.time || '')),
+    name: gb.name || '',
+    address: gb.address || '',
+    phone: String(gb.phone || ''),
+    purpose: gb.purpose || '',
+    signatureFileId: fileId,
+    signatureUrl: sigUrl,
+    createdAt: gb.createdAt || '',
+    updatedAt: gb.diubah_pada || '',
+    diubah_pada: gb.diubah_pada || '',
+    updatedBy: gb.updatedBy || ''
+  };
+}
+
+function handleGetGuestBook_(ss, params) {
+  var rows = readActiveRows_(ss, 'GuestBook');
+  var startDate = String((params && params.startDate) || '').trim();
+  var endDate = String((params && params.endDate) || '').trim();
+  var dateFilter = String((params && params.date) || '').trim();
+
+  var result = [];
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var row = rows[i];
+    var rDate = String(row.date || '').trim();
+    if (dateFilter && rDate !== dateFilter) continue;
+    if (startDate && rDate < startDate) continue;
+    if (endDate && rDate > endDate) continue;
+    result.push(formatGuestBookRow_(row));
+  }
+  return { success: true, data: result };
+}
+
+function handleSaveGuestEntry_(ss, payload, actor) {
+  var name = String(payload.name || '').trim();
+  var address = String(payload.address || '').trim();
+  var phone = String(payload.phone || '').trim();
+  var purpose = String(payload.purpose || '').trim();
+  var sigData = String(payload.signatureDataUrl || payload.signatureBase64 || '').trim();
+
+  if (!name) {
+    return { success: false, mutated: false, error: 'Nama tamu wajib diisi.' };
+  }
+  if (!address) {
+    return { success: false, mutated: false, error: 'Alamat tamu wajib diisi.' };
+  }
+  if (!phone) {
+    return { success: false, mutated: false, error: 'Nomor HP tamu wajib diisi.' };
+  }
+  if (!sigData) {
+    return { success: false, mutated: false, error: 'Tanda tangan digital tamu wajib diisi.' };
+  }
+
+  var driveRes = ensureDriveFolders_(true);
+  if (!driveRes.ok || !driveRes.guestSignatureFolder) {
+    return { success: false, mutated: false, error: driveRes.error || 'Folder tanda tangan tamu di Drive belum siap.' };
+  }
+
+  var mimeType = 'image/png';
+  var cleanBase64 = sigData;
+  var dataUrlMatch = sigData.match(/^data:([^;]+);base64,(.+)$/);
+  if (dataUrlMatch) {
+    mimeType = dataUrlMatch[1];
+    cleanBase64 = dataUrlMatch[2];
+  }
+
+  var bytes;
+  try {
+    bytes = Utilities.base64Decode(cleanBase64);
+  } catch (decodeErr) {
+    return { success: false, mutated: false, error: 'Format gambar tanda tangan digital tidak valid.' };
+  }
+
+  if (!bytes || bytes.length < 150) {
+    return { success: false, mutated: false, error: 'Tanda tangan digital terlihat kosong. Silakan goreskan tanda tangan terlebih dahulu.' };
+  }
+
+  var ext = mimeType.indexOf('jpeg') >= 0 || mimeType.indexOf('jpg') >= 0 ? 'jpg' : 'png';
+  var parts = nowWibParts_();
+  var newId = generateId_('gst');
+  var safeName = sanitizeDriveName_(name) || 'Tamu';
+  var fileName = parts.date + ' - ' + safeName + ' - TTD_' + String(Date.now()).slice(-4) + '.' + ext;
+
+  var blob = Utilities.newBlob(bytes, mimeType, fileName);
+  var driveFile = driveRes.guestSignatureFolder.createFile(blob);
+  var fileId = driveFile.getId();
+  var sigUrl = 'gas-photo://' + fileId;
+
+  var sheet = ss.getSheetByName('GuestBook');
+  if (!sheet) {
+    ensureAllSheets_(ss, true);
+    sheet = ss.getSheetByName('GuestBook');
+  }
+
+  var entryObj = {
+    id: newId,
+    date: parts.date,
+    time: parts.hhmm,
+    name: name,
+    address: address,
+    phone: phone,
+    purpose: purpose,
+    signatureFileId: fileId,
+    signatureUrl: sigUrl,
+    status: 'aktif',
+    createdAt: parts.iso,
+    diubah_pada: parts.iso,
+    updatedBy: actor || name
+  };
+
+  appendObjectRow_(sheet, 'GuestBook', entryObj);
+  writeAuditLog_(
+    ss,
+    actor || name,
+    'CREATE',
+    'GuestBook',
+    newId,
+    'Catat tamu "' + name + '" (' + phone + ') + TTD Drive "' + driveRes.guestSignatureFolder.getName() + '/' + fileName + '"'
+  );
+
+  return {
+    success: true,
+    mutated: true,
+    id: newId,
+    data: formatGuestBookRow_(entryObj),
+    message: 'Buku tamu & tanda tangan digital berhasil disimpan ke Google Sheets & Google Drive.'
+  };
 }

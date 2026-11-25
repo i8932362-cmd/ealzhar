@@ -12,6 +12,7 @@ import {
   FollowUpNote,
   FrequentToiletStudent,
   AttendanceSession,
+  GuestBookEntry,
 } from '../types/index.ts';
 import {
   gasGet,
@@ -78,6 +79,7 @@ interface SyncContextType {
   users: ManagedUserRow[];
   auditLogs: AuditLog[];
   followUpNotes: FollowUpNote[];
+  guestBook: GuestBookEntry[];
   sessions: AttendanceSession[];
   activeStudentSession: AttendanceSession | null;
   activeTeacherSession: AttendanceSession | null;
@@ -146,6 +148,7 @@ interface SyncSnapshotCache {
   activePermits?: ToiletPermit[];
   frequentToiletStudents?: FrequentToiletStudent[];
   todayAttendance?: StudentAttendance[];
+  guestBook?: GuestBookEntry[];
   serverDate?: string;
 }
 
@@ -238,6 +241,9 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [users, setUsers] = useState<ManagedUserRow[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [followUpNotes, setFollowUpNotes] = useState<FollowUpNote[]>([]);
+  const [guestBook, setGuestBook] = useState<GuestBookEntry[]>(() =>
+    Array.isArray(snap.guestBook) ? snap.guestBook : []
+  );
   const [sessions, setSessions] = useState<AttendanceSession[]>(() =>
     Array.isArray(snap.sessions) ? sortSessions(snap.sessions) : []
   );
@@ -351,6 +357,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
           users?: ManagedUserRow[];
           auditLogs?: AuditLog[];
           followUpNotes?: FollowUpNote[];
+          guestBook?: GuestBookEntry[];
           sessions?: AttendanceSession[];
           serverHhmm?: string;
         }>('sync', {
@@ -394,8 +401,27 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setSettings(resolvedSettings);
             }
             if (sortedSessions) setSessions(sortedSessions);
+
+            // Defensive filter so deleted teachers/students never keep orphaned FaceTemplates
+            const nextStudents = Array.isArray(res.students) ? res.students : prevSnap.students || [];
+            const nextTeachers = Array.isArray(res.teachers) ? res.teachers : prevSnap.teachers || [];
+            const nextUsers = Array.isArray(res.users) ? res.users : [];
+            const validStudentIds = new Set(nextStudents.map((s) => s.id));
+            const validTeacherIds = new Set<string>([
+              ...nextTeachers.filter((t) => t.isActive !== false).map((t) => t.id),
+              ...nextUsers
+                .filter((u) => u.isActive !== false && String(u.role || '').toLowerCase() !== 'superadmin')
+                .map((u) => u.id),
+            ]);
+
             if (Array.isArray(res.faceTemplates)) {
-              setFaceTemplates(normalizeDescriptors(res.faceTemplates));
+              const cleanTemplates = normalizeDescriptors(res.faceTemplates).filter((f) => {
+                if (f.personType === 'teacher') {
+                  return validTeacherIds.size === 0 || validTeacherIds.has(f.personId);
+                }
+                return validStudentIds.size === 0 || validStudentIds.has(f.personId);
+              });
+              setFaceTemplates(cleanTemplates);
               setFaceTemplatesSyncedAt(new Date());
             }
             if (Array.isArray(res.classes)) setClasses(res.classes);
@@ -408,6 +434,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (Array.isArray(res.users)) setUsers(res.users);
             if (Array.isArray(res.auditLogs)) setAuditLogs(res.auditLogs);
             if (Array.isArray(res.followUpNotes)) setFollowUpNotes(res.followUpNotes);
+            if (Array.isArray(res.guestBook)) setGuestBook(res.guestBook);
 
             writeSyncSnapshotCache({
               settings: resolvedSettings ?? prevSnap.settings,
@@ -421,6 +448,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 ? res.frequentToiletStudents
                 : prevSnap.frequentToiletStudents,
               todayAttendance: Array.isArray(res.todayAttendance) ? res.todayAttendance : prevSnap.todayAttendance,
+              guestBook: Array.isArray(res.guestBook) ? res.guestBook : prevSnap.guestBook,
               serverDate: res.serverDate ? String(res.serverDate) : prevSnap.serverDate,
             });
           }
@@ -654,6 +682,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
         users,
         auditLogs,
         followUpNotes,
+        guestBook,
         sessions,
         activeStudentSession,
         activeTeacherSession,

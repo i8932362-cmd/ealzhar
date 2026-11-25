@@ -19,11 +19,13 @@ import {
   LayoutGrid,
   ShieldCheck,
   User,
+  BookOpen,
 } from 'lucide-react';
 
 export type ActiveTab =
   | 'portal'
   | 'kiosk'
+  | 'guest'
   | 'homeroom'
   | 'counseling'
   | 'teacher'
@@ -85,6 +87,11 @@ export const Navbar: React.FC<NavbarProps> = ({
       icon: <Briefcase className="w-4 h-4" />,
       requiresAuth: true,
       allowedRoles: ['admin', 'guru', 'wali_kelas', 'bk', 'kesiswaan'],
+    },
+    {
+      id: 'guest',
+      label: 'Tamu Sekolah',
+      icon: <BookOpen className="w-4 h-4" />,
     },
     {
       id: 'homeroom',
